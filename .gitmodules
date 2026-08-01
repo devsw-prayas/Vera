@@ -1,0 +1,4 @@
+[submodule "external/NexusBVH"]
+	path = external/NexusBVH
+	url = https://github.com/devsw-prayas/NexusBVH-FlashPath.git
+	branch = flash-path-fa2
