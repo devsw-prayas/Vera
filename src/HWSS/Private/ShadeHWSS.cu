@@ -1,0 +1,428 @@
+#include "ShadeHWSS.cuh"
+#include "MatHelpersHWSS.h"
+#include "LightBVHSamplerHWSS.cuh"
+#include "CIE.h"
+#include "PCG32.cuh"
+#include <PhaseFunction.cuh>
+#include <Triangle.h>
+#include <BVH.h>
+#include <CudaMath.h>
+
+namespace BSPT::Spectral::HWSS {
+	using MH = MatHelpersHWSS;
+
+	// Adds a per-lane spectral contribution to the framebuffer: weight = 1/(activeLanes*pdf_lane).
+	// activeLanes (lanes with pdf > 0) is NOT always HWSS_LANES: once a path hits a
+	// dispersive event, RAY_FLAG_DISPERSED zeroes 3 of the 4 lanes' pdf, leaving only
+	// the hero lane valid. Dividing by the fixed lane count instead of the number of
+	// lanes actually still contributing would silently under-weight every dispersed
+	// sample by that same factor — a real, sample-count-independent bias, not noise.
+	__device__ inline void AccumulateContribution(
+		FrameBufferHWSS& fb, uint32_t pixelId,
+		const float4& wavelengths, const float4& throughput, const float4& pdf, const float4& Le)
+	{
+		float wl[4]     = { wavelengths.x, wavelengths.y, wavelengths.z, wavelengths.w };
+		float thpt[4]   = { throughput.x,  throughput.y,  throughput.z,  throughput.w };
+		float pdfArr[4] = { pdf.x, pdf.y, pdf.z, pdf.w };
+		float leArr[4]  = { Le.x, Le.y, Le.z, Le.w };
+
+		int activeLanes = 0;
+		for (int lane = 0; lane < HWSS_LANES; ++lane)
+			if (pdfArr[lane] > 0.f) ++activeLanes;
+		if (activeLanes == 0) return;
+
+		float3 xyz = make_float3(0.f, 0.f, 0.f);
+		for (int lane = 0; lane < HWSS_LANES; ++lane) {
+			if (pdfArr[lane] <= 0.f) continue;
+			float contrib = thpt[lane] * leArr[lane] / (activeLanes * pdfArr[lane]);
+			xyz.x += contrib * CIE_X(wl[lane]);
+			xyz.y += contrib * CIE_Y(wl[lane]);
+			xyz.z += contrib * CIE_Z(wl[lane]);
+		}
+		atomicAdd(&fb.d_accumXYZ[pixelId].x, xyz.x);
+		atomicAdd(&fb.d_accumXYZ[pixelId].y, xyz.y);
+		atomicAdd(&fb.d_accumXYZ[pixelId].z, xyz.z);
+	}
+
+	__device__ inline float3 Reflect(float3 wo, float3 n) {
+		return normalize(2.f * dot(wo, n) * n - wo);
+	}
+
+	__device__ inline float PowerHeuristic(float pdfA, float pdfB) {
+		float a2 = pdfA * pdfA, b2 = pdfB * pdfB;
+		return (a2 + b2 > 0.f) ? a2 / (a2 + b2) : 0.f;
+	}
+
+	// ── Shadow ray occlusion (boolean-only TLAS/BLAS walk, early exit) ────────
+	__device__ inline bool RayAABBOcclusion(float3 o, float3 d, float tmin, float tmax, const NXB::AABB& aabb) {
+		float3 invD = make_float3(1.f / d.x, 1.f / d.y, 1.f / d.z);
+		float tminx = fminf((aabb.bMin.x - o.x) * invD.x, (aabb.bMax.x - o.x) * invD.x);
+		float tmaxx = fmaxf((aabb.bMin.x - o.x) * invD.x, (aabb.bMax.x - o.x) * invD.x);
+		float tminy = fminf((aabb.bMin.y - o.y) * invD.y, (aabb.bMax.y - o.y) * invD.y);
+		float tmaxy = fmaxf((aabb.bMin.y - o.y) * invD.y, (aabb.bMax.y - o.y) * invD.y);
+		float tminz = fminf((aabb.bMin.z - o.z) * invD.z, (aabb.bMax.z - o.z) * invD.z);
+		float tmaxz = fmaxf((aabb.bMin.z - o.z) * invD.z, (aabb.bMax.z - o.z) * invD.z);
+		float lo = fmaxf(tmin, fmaxf(tminx, fmaxf(tminy, tminz)));
+		float hi = fminf(tmax, fminf(tmaxx, fminf(tmaxy, tmaxz)));
+		return hi >= lo;
+	}
+
+	__device__ inline bool RayTriangleOcclusion(float3 o, float3 d, float tmin, float tmax, const NXB::Triangle& tri) {
+		float3 edge1 = tri.v1 - tri.v0;
+		float3 edge2 = tri.v2 - tri.v0;
+		float3 h = cross(d, edge2);
+		float a = dot(edge1, h);
+		if (a > -FLT_EPSILON && a < FLT_EPSILON) return false;
+		float f = 1.f / a;
+		float3 s = o - tri.v0;
+		float u = f * dot(s, h);
+		if (u < 0.f || u > 1.f) return false;
+		float3 q = cross(s, edge1);
+		float v = f * dot(d, q);
+		if (v < 0.f || u + v > 1.f) return false;
+		float t = f * dot(edge2, q);
+		return t >= tmin && t <= tmax;
+	}
+
+	__device__ bool ShadowOccluded(Core::GeometryBuffers geom, float3 origin, float3 dir, float tMax) {
+		float tmin = 1e-4f;
+		unsigned int tlasStk[32];
+		tlasStk[0] = geom.m_Tlas.nodeCount - 1;
+		int tlasStkPtr = 0;
+
+		while (tlasStkPtr >= 0) {
+			NXB::BVH2::Node tlasNode = geom.m_Tlas.nodes[tlasStk[tlasStkPtr--]];
+			if (!RayAABBOcclusion(origin, dir, tmin, tMax, tlasNode.bounds)) continue;
+
+			if (tlasNode.leftChild == INVALID_IDX) {
+				Core::Instance inst = geom.m_DevInstances[tlasNode.rightChild];
+				float3 lo = make_float3(
+					dot(make_float3(inst.m_InvTransform[0].x, inst.m_InvTransform[0].y, inst.m_InvTransform[0].z), origin) + inst.m_InvTransform[0].w,
+					dot(make_float3(inst.m_InvTransform[1].x, inst.m_InvTransform[1].y, inst.m_InvTransform[1].z), origin) + inst.m_InvTransform[1].w,
+					dot(make_float3(inst.m_InvTransform[2].x, inst.m_InvTransform[2].y, inst.m_InvTransform[2].z), origin) + inst.m_InvTransform[2].w);
+				float3 ld = make_float3(
+					dot(make_float3(inst.m_InvTransform[0].x, inst.m_InvTransform[0].y, inst.m_InvTransform[0].z), dir),
+					dot(make_float3(inst.m_InvTransform[1].x, inst.m_InvTransform[1].y, inst.m_InvTransform[1].z), dir),
+					dot(make_float3(inst.m_InvTransform[2].x, inst.m_InvTransform[2].y, inst.m_InvTransform[2].z), dir));
+
+				unsigned int blasStk[32];
+				blasStk[0] = inst.m_Blas.nodeCount - 1;
+				int blasStkPtr = 0;
+				while (blasStkPtr >= 0) {
+					NXB::BVH2::Node blasNode = inst.m_Blas.nodes[blasStk[blasStkPtr--]];
+					if (!RayAABBOcclusion(lo, ld, tmin, tMax, blasNode.bounds)) continue;
+					if (blasNode.leftChild == INVALID_IDX) {
+						uint32_t globalPrim = inst.m_FirstTri + blasNode.rightChild;
+						if (RayTriangleOcclusion(lo, ld, tmin, tMax, geom.m_BvhTris[globalPrim])) return true;
+					} else {
+						blasStk[++blasStkPtr] = blasNode.rightChild;
+						blasStk[++blasStkPtr] = blasNode.leftChild;
+					}
+				}
+			} else {
+				tlasStk[++tlasStkPtr] = tlasNode.rightChild;
+				tlasStk[++tlasStkPtr] = tlasNode.leftChild;
+			}
+		}
+		return false;
+	}
+
+	// NEE against LightBVH area lights, Lambertian surfaces only.
+	__device__ inline void SampleDirectLighting(
+		Core::GeometryBuffers& geom, const LightBVH& lightBvh, const Material* materials,
+		const float3& P, const float3& normal, const Material& mat,
+		RayHWSS& ray, Core::PCG32& rng, FrameBufferHWSS& fb)
+	{
+		if (lightBvh.lightCount == 0) return;
+
+		LightSample ls = SampleLightBVH(lightBvh, geom, P, rng.nextFloat(), rng.nextFloat(), rng.nextFloat2());
+		if (ls.pdf <= 0.f) return;
+
+		float3 toLight = ls.position - P;
+		float  dist2   = fmaxf(dot(toLight, toLight), 1e-8f);
+		float  dist    = sqrtf(dist2);
+		float3 wi      = toLight / dist;
+
+		float cosSurf  = fmaxf(dot(wi, normal), 0.f);
+		float cosLight = fmaxf(dot(ls.normal, -wi), 0.f);
+		if (cosSurf <= 0.f || cosLight <= 1e-6f) return;
+
+		float solidPdf = ls.pdf * dist2 / cosLight;
+		if (solidPdf <= 0.f) return;
+
+		if (ShadowOccluded(geom, P + normal * 1e-4f, wi, dist - 2e-3f)) return;
+
+		const Material& lmat = materials[ls.materialId];
+		float4 LeVec = make_float4(
+			EvalEmission(lmat, ray.m_Wavelengths.x), EvalEmission(lmat, ray.m_Wavelengths.y),
+			EvalEmission(lmat, ray.m_Wavelengths.z), EvalEmission(lmat, ray.m_Wavelengths.w));
+
+		// MIS against BSDF sampling: what pdf would sampling the BSDF have given this
+		// same direction wi? (Lambertian is the only NEE-capable material here.)
+		float bsdfPdfForWi = MH::lambertianPdf(wi, normal);
+		float misWeight = PowerHeuristic(solidPdf, bsdfPdfForWi);
+
+		float4 nee = ray.m_Throughput;
+		float scale = misWeight * cosSurf / solidPdf;
+		nee.x *= MH::evalLambertian(EvalReflectance(mat, ray.m_Wavelengths.x)) * scale;
+		nee.y *= MH::evalLambertian(EvalReflectance(mat, ray.m_Wavelengths.y)) * scale;
+		nee.z *= MH::evalLambertian(EvalReflectance(mat, ray.m_Wavelengths.z)) * scale;
+		nee.w *= MH::evalLambertian(EvalReflectance(mat, ray.m_Wavelengths.w)) * scale;
+
+		AccumulateContribution(fb, ray.pixelId, ray.m_Wavelengths, nee, ray.m_Pdf, LeVec);
+	}
+
+	__global__ void ShadeKernelHWSSWavefront(
+		Core::GeometryBuffers geom,
+		RayHWSS* raysIn,
+		Core::WavefrontHitRecord* hits,
+		const Material* materials,
+		const MediumHWSS* media,
+		LightBVH lightBvh,
+		RayHWSS* raysOut,
+		uint32_t rayCount,
+		FrameBufferHWSS fb,
+		EnvMapHWSS envMap,
+		uint32_t maxBounces)
+	{
+		unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
+		if (idx >= rayCount) return;
+
+		RayHWSS ray = raysIn[idx];
+		if (ray.flags & RAY_FLAG_DEAD) { raysOut[idx] = ray; return; }
+
+		Core::WavefrontHitRecord hit = hits[idx];
+
+		Core::PCG32 rng;
+		rng.m_State = ray.m_RngState;
+
+		// ── Participating medium: free-flight sample before surface shading ──
+		if (ray.m_MediumIdx != 0) {
+			MediumHWSS med = media[ray.m_MediumIdx - 1];
+			float sigmaTHero = EvalSigmaT(med, ray.m_Wavelengths.x);
+			if (sigmaTHero > 0.f) {
+				float tMax = hit.m_Hit ? hit.t : 1e6f;
+				float u = rng.nextFloat();
+				float sampledDist = -logf(fmaxf(1.f - u, 1e-8f)) / sigmaTHero;
+
+				if (sampledDist < tMax) {
+					// Volume scatter event: reweight lanes by Tr_lane/Tr_hero (ratio tracking),
+					// sample a new direction from the HG phase function, skip surface shading.
+					float3 scatterP = ray.m_Origin + sampledDist * ray.m_Direction;
+					float pdfHero = sigmaTHero * expf(-sigmaTHero * sampledDist);
+					float4 thpt = ray.m_Throughput;
+					float wl[4] = { ray.m_Wavelengths.x, ray.m_Wavelengths.y, ray.m_Wavelengths.z, ray.m_Wavelengths.w };
+					float* thptArr[4] = { &thpt.x, &thpt.y, &thpt.z, &thpt.w };
+					for (int lane = 0; lane < HWSS_LANES; ++lane) {
+						float sigmaTLane = EvalSigmaT(med, wl[lane]);
+						float sigmaSLane = EvalSigmaS(med, wl[lane]);
+						float trLane = expf(-sigmaTLane * sampledDist);
+						*thptArr[lane] *= sigmaSLane * trLane / fmaxf(pdfHero, 1e-12f);
+					}
+
+					float3 wo = -ray.m_Direction;
+					float phasePdf;
+					float3 wi = Core::HGPhaseSample(med.g, wo, rng.nextFloat2(), phasePdf);
+
+					ray.m_Origin      = scatterP;
+					ray.m_Direction   = wi;
+					ray.m_Throughput  = thpt;
+					ray.m_BounceCount += 1;
+					ray.flags &= ~RAY_FLAG_DELTA;
+					ray.m_RngState = rng.m_State;
+					if (ray.m_BounceCount >= maxBounces) ray.flags |= RAY_FLAG_DEAD;
+					raysOut[idx] = ray;
+					return;
+				} else {
+					// No scatter: attenuate to the surface (or to infinity on miss) by the
+					// per-lane/hero transmittance ratio.
+					float pNoScatter = expf(-sigmaTHero * tMax);
+					float wl[4] = { ray.m_Wavelengths.x, ray.m_Wavelengths.y, ray.m_Wavelengths.z, ray.m_Wavelengths.w };
+					float* thptArr[4] = { &ray.m_Throughput.x, &ray.m_Throughput.y, &ray.m_Throughput.z, &ray.m_Throughput.w };
+					for (int lane = 0; lane < HWSS_LANES; ++lane) {
+						float trLane = expf(-EvalSigmaT(med, wl[lane]) * tMax);
+						*thptArr[lane] *= trLane / fmaxf(pNoScatter, 1e-12f);
+					}
+				}
+			}
+		}
+
+		if (!hit.m_Hit) {
+			float4 LeVec = make_float4(
+				EvalEnvMap(envMap, ray.m_Wavelengths.x), EvalEnvMap(envMap, ray.m_Wavelengths.y),
+				EvalEnvMap(envMap, ray.m_Wavelengths.z), EvalEnvMap(envMap, ray.m_Wavelengths.w));
+			AccumulateContribution(fb, ray.pixelId, ray.m_Wavelengths, ray.m_Throughput, ray.m_Pdf, LeVec);
+			ray.flags |= RAY_FLAG_DEAD;
+			raysOut[idx] = ray;
+			return;
+		}
+
+		uint16_t matId = geom.m_TriMatID[hit.m_PrimIdx];
+		Material mat = materials[matId];
+
+		Core::Instance inst = geom.m_DevInstances[hit.m_InstIdx];
+		// Smooth (Gouraud-interpolated) normal, not the flat per-triangle facet
+		// normal — using the flat normal made faceted low-poly meshes show hard,
+		// tessellation-aligned shading edges, especially visible on near-mirror
+		// GGX surfaces where a single facet's exact normal fully determines the
+		// reflection direction.
+		uint32_t vi0 = geom.m_DevIndexBuffer[hit.m_PrimIdx * 3 + 0];
+		uint32_t vi1 = geom.m_DevIndexBuffer[hit.m_PrimIdx * 3 + 1];
+		uint32_t vi2 = geom.m_DevIndexBuffer[hit.m_PrimIdx * 3 + 2];
+		float3 n0 = geom.m_DevVertexNorms[vi0];
+		float3 n1 = geom.m_DevVertexNorms[vi1];
+		float3 n2 = geom.m_DevVertexNorms[vi2];
+		float bary0 = 1.f - hit.m_U - hit.m_V;
+		float3 nLocal = normalize(bary0 * n0 + hit.m_U * n1 + hit.m_V * n2);
+		float3 normal = normalize(make_float3(
+			dot(make_float3(inst.m_Transform[0].x, inst.m_Transform[0].y, inst.m_Transform[0].z), nLocal),
+			dot(make_float3(inst.m_Transform[1].x, inst.m_Transform[1].y, inst.m_Transform[1].z), nLocal),
+			dot(make_float3(inst.m_Transform[2].x, inst.m_Transform[2].y, inst.m_Transform[2].z), nLocal)));
+
+		float3 P  = ray.m_Origin + hit.t * ray.m_Direction;
+		float3 wo = -ray.m_Direction;
+		// True geometric normal (always points outward from the surface, e.g. away
+		// from a sphere's center) — needed for the Dielectric entering/exiting test
+		// below, which must not use the "face the viewer" flipped normal: that one
+		// is defined to always point against ray.m_Direction, which would make
+		// entering/exiting look identical from both sides of the surface.
+		float3 geoNormal = normal;
+		if (dot(wo, normal) < 0.f) normal = -normal;
+
+		if (mat.type == MaterialType::Emissive) {
+			// Camera/specular bounces (RAY_FLAG_DELTA) have no competing NEE
+			// strategy, so this BSDF-sampled hit gets full weight. Otherwise the
+			// previous (Lambertian) bounce also sampled this light explicitly via
+			// NEE — MIS-combine the two strategies via the power heuristic instead
+			// of naively picking one, using EmissiveHitPdf for the light strategy's
+			// pdf of the exact direction the BSDF sample happened to take.
+			float misWeight = 1.f;
+			if (!(ray.flags & RAY_FLAG_DELTA)) {
+				float lightPdfArea = EmissiveHitPdf(lightBvh, hit.m_PrimIdx, ray.m_Origin);
+				float cosLight = fabsf(dot(normal, ray.m_Direction));
+				float dist2 = hit.t * hit.t;
+				float lightPdfSolidAngle = (lightPdfArea > 0.f && cosLight > 1e-6f) ? lightPdfArea * dist2 / cosLight : 0.f;
+				misWeight = PowerHeuristic(ray.m_BsdfPdf, lightPdfSolidAngle);
+			}
+			if (misWeight > 0.f) {
+				float4 LeVec = make_float4(
+					EvalEmission(mat, ray.m_Wavelengths.x), EvalEmission(mat, ray.m_Wavelengths.y),
+					EvalEmission(mat, ray.m_Wavelengths.z), EvalEmission(mat, ray.m_Wavelengths.w));
+				float4 thptWeighted = make_float4(
+					ray.m_Throughput.x * misWeight, ray.m_Throughput.y * misWeight,
+					ray.m_Throughput.z * misWeight, ray.m_Throughput.w * misWeight);
+				AccumulateContribution(fb, ray.pixelId, ray.m_Wavelengths, thptWeighted, ray.m_Pdf, LeVec);
+			}
+			ray.flags |= RAY_FLAG_DEAD;
+			raysOut[idx] = ray;
+			return;
+		}
+
+		if (mat.type == MaterialType::Lambertian)
+			SampleDirectLighting(geom, lightBvh, materials, P, normal, mat, ray, rng, fb);
+
+		float3 wi;
+		float  pdfDirectional = 0.f;
+		float4 thpt = ray.m_Throughput;
+		bool   valid = true;
+
+		if (mat.type == MaterialType::Lambertian) {
+			MH::sampleLambertian(normal, rng.nextFloat2(), wi, pdfDirectional);
+			if (pdfDirectional <= 0.f) valid = false;
+			else {
+				float r0 = EvalReflectance(mat, ray.m_Wavelengths.x);
+				float r1 = EvalReflectance(mat, ray.m_Wavelengths.y);
+				float r2 = EvalReflectance(mat, ray.m_Wavelengths.z);
+				float r3 = EvalReflectance(mat, ray.m_Wavelengths.w);
+				// cosine-weighted sampling cancels cosTheta/pdf, leaving throughput *= albedo
+				thpt.x *= r0; thpt.y *= r1; thpt.z *= r2; thpt.w *= r3;
+			}
+		} else if (mat.type == MaterialType::GGX) {
+			float3 tangent, bitangent;
+			MH::buildONB(normal, tangent, bitangent);
+			float3 wo_l = make_float3(dot(wo, tangent), dot(wo, bitangent), dot(wo, normal));
+			float  alpha = fmaxf(mat.roughness * mat.roughness, 1e-4f);
+
+			float3 h_l  = MH::sampleGGXVNDF(wo_l, alpha, rng.nextFloat2());
+			float3 wi_l = 2.f * dot(wo_l, h_l) * h_l - wo_l;
+			if (wi_l.z <= 0.f) { valid = false; }
+			else {
+				wi = MH::toWorld(wi_l, normal, tangent, bitangent);
+				float a2   = alpha * alpha;
+				float G1wo = 2.f * wo_l.z / (wo_l.z + sqrtf(a2 + (1.f - a2) * wo_l.z * wo_l.z));
+				// VNDF importance sampling makes D and most of the pdf cancel, leaving
+				// throughput *= F * G2(wi,wo)/G1(wo) — see Heitz 2018. MH::ggxG2 returns
+				// the visibility term Vis = G2/(4*wo.z*wi.z), not G2 itself, so recover
+				// G2 by multiplying back the 4*wo.z*wi.z factor before dividing by G1(wo).
+				float vis   = MH::ggxG2(wi_l, wo_l, alpha);
+				float ratio = (vis * 4.f * wo_l.z * wi_l.z) / fmaxf(G1wo, 1e-7f);
+
+				float cosTheta = fmaxf(dot(wo, normal), 0.f);
+				float f0 = EvalReflectance(mat, ray.m_Wavelengths.x);
+				float f1 = EvalReflectance(mat, ray.m_Wavelengths.y);
+				float f2 = EvalReflectance(mat, ray.m_Wavelengths.z);
+				float f3 = EvalReflectance(mat, ray.m_Wavelengths.w);
+				thpt.x *= MH::schlickFresnel(f0, cosTheta) * ratio;
+				thpt.y *= MH::schlickFresnel(f1, cosTheta) * ratio;
+				thpt.z *= MH::schlickFresnel(f2, cosTheta) * ratio;
+				thpt.w *= MH::schlickFresnel(f3, cosTheta) * ratio;
+				pdfDirectional = 1.f; // VNDF importance sampling cancels pdf into the ratio above
+			}
+		} else { // Dielectric
+			float etaHero = EvalIOR(mat, ray.m_Wavelengths.x);
+			bool entering = dot(ray.m_Direction, geoNormal) < 0.f;
+			float etaI = entering ? ray.m_IorCurr : etaHero;
+			float etaT = entering ? etaHero : 1.f;
+			float F = MH::fresnelDielectric(dot(wo, normal), etaI, etaT);
+
+			if (rng.nextFloat() < F) {
+				wi = Reflect(wo, normal);
+				pdfDirectional = F;
+				// mirror reflection is achromatic (Snell's law only bends refraction)
+			} else {
+				// normal is already oriented onto wo's side by the earlier flip (for
+				// both entering and exiting), which is exactly what refract() needs —
+				// re-flipping here for the exit case put n on the wrong side and broke
+				// cosThetaI's sign inside refract().
+				float3 n = normal;
+				float eta = etaI / etaT;
+				float3 wt;
+				if (!MH::refract(-wo, n, eta, wt)) { valid = false; }
+				else {
+					wi = wt;
+					pdfDirectional = 1.f - F;
+					ray.m_IorCurr = etaT;
+					// entering the dielectric's interior medium (0 = vacuum/exit)
+					ray.m_MediumIdx = entering ? mat.mediumIdx : 0;
+					if (mat.cauchyB != 0.f) {
+						// Dispersive: offset lanes would refract at different angles than
+						// the hero direction we traced — collapse to hero-only (Wilkie et al.).
+						ray.flags |= RAY_FLAG_DISPERSED;
+						ray.m_Pdf.y = ray.m_Pdf.z = ray.m_Pdf.w = 0.f;
+						thpt.y = thpt.z = thpt.w = 0.f;
+					}
+				}
+			}
+		}
+
+		if (!valid || pdfDirectional <= 0.f) {
+			ray.flags |= RAY_FLAG_DEAD;
+			raysOut[idx] = ray;
+			return;
+		}
+
+		ray.m_Origin      = P + wi * 1e-4f;
+		ray.m_Direction   = wi;
+		ray.m_Throughput  = thpt;
+		ray.m_BsdfPdf     = pdfDirectional; // only meaningful when RAY_FLAG_DELTA is unset (Lambertian)
+		ray.m_BounceCount += 1;
+		ray.flags &= ~RAY_FLAG_DELTA;
+		if (mat.type == MaterialType::GGX || mat.type == MaterialType::Dielectric)
+			ray.flags |= RAY_FLAG_DELTA;
+		ray.m_RngState = rng.m_State;
+
+		if (ray.m_BounceCount >= maxBounces) ray.flags |= RAY_FLAG_DEAD;
+
+		raysOut[idx] = ray;
+	}
+}

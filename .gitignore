@@ -104,6 +104,8 @@ renders/*
 *.ppm
 *.exr
 *.hdr
+/output*.png
+/problems/
 
 # Claude
 .claude/

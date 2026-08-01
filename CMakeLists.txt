@@ -25,8 +25,7 @@ add_executable(BispectralPathTracer
 
 target_include_directories(BispectralPathTracer PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Core/Public
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/RGB/Public
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/Spectral/Public
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/HWSS/Public
 )
 
 target_precompile_headers(BispectralPathTracer PRIVATE
@@ -42,6 +41,7 @@ target_compile_options(BispectralPathTracer PRIVATE
 
 target_compile_definitions(BispectralPathTracer PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:__CUDACC__>
+    BSPT_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/src/HWSS/Data/"
 )
 
 set_target_properties(BispectralPathTracer PROPERTIES
