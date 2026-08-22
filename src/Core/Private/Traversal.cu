@@ -138,8 +138,8 @@ __device__ bool TraverseAnyHit(
 
 __global__ void TraversalKernelWavefront(
 	GeometryBuffers geom,
-	Spectral::HWSS::RayHWSS* rays,
-	WavefrontHitRecord* hits,
+	const Spectral::HWSS::RayHWSS* __restrict__ rays,
+	WavefrontHitRecord* __restrict__ hits,
 	uint32_t rayCount)
 {
 	unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
