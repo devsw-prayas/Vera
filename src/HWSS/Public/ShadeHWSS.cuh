@@ -20,9 +20,9 @@ namespace Vera::Spectral::HWSS {
 	// sampling doesn't fork per lane, except once RAY_FLAG_DISPERSED collapses
 	// the path to the hero lane only).
 	//
-	// NEE (next-event estimation) fires only on Lambertian hits, sampling
-	// LightBVH area lights directly (GGX/Dielectric skip NEE — no BSDF *eval*
-	// was written for them, only sample). The NEE contribution and any
+	// NEE (next-event estimation) fires on Lambertian and GGX hits, sampling
+	// LightBVH area lights directly (Dielectric still skips NEE and is treated
+	// as delta — no BSDF *eval* was written for it, only sample). The NEE contribution and any
 	// BSDF-sampled ray that later lands on the same light are combined via
 	// power-heuristic MIS (RayHWSS::m_BsdfPdf carries the sampling pdf forward;
 	// EmissiveHitPdf recovers the light strategy's pdf for the hit direction).

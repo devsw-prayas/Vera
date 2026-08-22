@@ -104,6 +104,71 @@ namespace Vera::Spectral::HWSS {
 		AccumulateContribution(fb, ray.pixelId, cieTex, ray.m_Wavelengths, nee, ray.m_Pdf, LeVec);
 	}
 
+	// NEE against LightBVH area lights, GGX surfaces. Mirrors SampleDirectLighting but
+	// evaluates the microfacet BRDF (D * Vis * F) for the sampled light direction instead
+	// of assuming Lambertian, and MIS-weights against the VNDF-sampling pdf for that same
+	// direction. Fresnel is evaluated at the macro cosTheta = dot(wo,normal), matching the
+	// same approximation the BSDF-sampling path below bakes into its throughput — using the
+	// textbook-correct dot(wo,h) here instead would make the two MIS strategies estimate
+	// slightly different functions and bias the combined estimate.
+	__device__ inline void SampleDirectLightingGGX(
+		Core::GeometryBuffers& geom, const LightBVH& lightBvh, const Material* materials,
+		const float3& P, const float3& normal, const float3& tangent, const float3& bitangent,
+		const float3& wo_l, float alpha, const Material& mat,
+		RayHWSS& ray, Core::PCG32& rng, FrameBufferHWSS& fb, cudaTextureObject_t cieTex)
+	{
+		if (lightBvh.lightCount == 0 || wo_l.z <= 0.f) return;
+
+		LightSample ls = SampleLightBVH(lightBvh, geom, P, rng.nextFloat(), rng.nextFloat(), rng.nextFloat2());
+		if (ls.pdf <= 0.f) return;
+
+		float3 toLight = ls.position - P;
+		float  dist2   = fmaxf(dot(toLight, toLight), 1e-8f);
+		float  dist    = sqrtf(dist2);
+		float3 wi      = toLight / dist;
+
+		float cosLight = fmaxf(dot(ls.normal, -wi), 0.f);
+		if (cosLight <= 1e-6f) return;
+
+		float3 wi_l = make_float3(dot(wi, tangent), dot(wi, bitangent), dot(wi, normal));
+		if (wi_l.z <= 0.f) return;
+
+		float solidPdf = ls.pdf * dist2 / cosLight;
+		if (solidPdf <= 0.f) return;
+
+		float3 h_l = normalize(wo_l + wi_l);
+		float  Dh  = MH::evalGGX(h_l, alpha);
+		float  vis = MH::ggxG2(wi_l, wo_l, alpha);
+
+		float a2   = alpha * alpha;
+		float G1wo = 2.f * wo_l.z / (wo_l.z + sqrtf(a2 + (1.f - a2) * wo_l.z * wo_l.z));
+		float bsdfPdf = G1wo * Dh / fmaxf(4.f * wo_l.z, 1e-7f);
+
+		if (Vera::Core::TraverseAnyHit(geom, P + normal * 1e-4f, wi, 1e-4f, dist - 2e-3f)) return;
+
+		const Material& lmat = materials[ls.materialId];
+		float4 LeVec = make_float4(
+			EvalEmission(lmat, ray.m_Wavelengths.x), EvalEmission(lmat, ray.m_Wavelengths.y),
+			EvalEmission(lmat, ray.m_Wavelengths.z), EvalEmission(lmat, ray.m_Wavelengths.w));
+
+		float misWeight = PowerHeuristic(solidPdf, bsdfPdf);
+		float cosTheta  = fmaxf(wo_l.z, 0.f); // == dot(wo,normal), macro-normal convention (see comment above)
+		float scale     = misWeight * wi_l.z / solidPdf;
+
+		float f0 = EvalReflectance(mat, ray.m_Wavelengths.x);
+		float f1 = EvalReflectance(mat, ray.m_Wavelengths.y);
+		float f2 = EvalReflectance(mat, ray.m_Wavelengths.z);
+		float f3 = EvalReflectance(mat, ray.m_Wavelengths.w);
+
+		float4 nee = ray.m_Throughput;
+		nee.x *= Dh * vis * MH::schlickFresnel(f0, cosTheta) * scale;
+		nee.y *= Dh * vis * MH::schlickFresnel(f1, cosTheta) * scale;
+		nee.z *= Dh * vis * MH::schlickFresnel(f2, cosTheta) * scale;
+		nee.w *= Dh * vis * MH::schlickFresnel(f3, cosTheta) * scale;
+
+		AccumulateContribution(fb, ray.pixelId, cieTex, ray.m_Wavelengths, nee, ray.m_Pdf, LeVec);
+	}
+
 	__global__ void ShadeKernelHWSSWavefront(
 		Core::GeometryBuffers geom,
 		RayHWSS* raysIn,
@@ -260,8 +325,19 @@ namespace Vera::Spectral::HWSS {
 			SampleDirectLighting(geom, lightBvh, materials, P, normal, lambertianReflectance, ray, rng, fb, cieTex);
 		}
 
+		float3 ggxTangent, ggxBitangent, ggxWo_l;
+		float  ggxAlpha = 0.f;
+		if (mat.type == MaterialType::GGX) {
+			MH::buildONB(normal, ggxTangent, ggxBitangent);
+			ggxWo_l = make_float3(dot(wo, ggxTangent), dot(wo, ggxBitangent), dot(wo, normal));
+			ggxAlpha = fmaxf(mat.roughness * mat.roughness, 1e-4f);
+			SampleDirectLightingGGX(geom, lightBvh, materials, P, normal, ggxTangent, ggxBitangent,
+				ggxWo_l, ggxAlpha, mat, ray, rng, fb, cieTex);
+		}
+
 		float3 wi;
 		float  pdfDirectional = 0.f;
+		float  bsdfMisPdf     = 0.f; // real solid-angle pdf of the sampled wi, used to MIS a later emissive hit
 		float4 thpt = ray.m_Throughput;
 		bool   valid = true;
 
@@ -272,26 +348,22 @@ namespace Vera::Spectral::HWSS {
 				// cosine-weighted sampling cancels cosTheta/pdf, leaving throughput *= albedo
 				thpt.x *= lambertianReflectance.x; thpt.y *= lambertianReflectance.y;
 				thpt.z *= lambertianReflectance.z; thpt.w *= lambertianReflectance.w;
+				bsdfMisPdf = pdfDirectional;
 			}
 		} else if (mat.type == MaterialType::GGX) {
-			float3 tangent, bitangent;
-			MH::buildONB(normal, tangent, bitangent);
-			float3 wo_l = make_float3(dot(wo, tangent), dot(wo, bitangent), dot(wo, normal));
-			float  alpha = fmaxf(mat.roughness * mat.roughness, 1e-4f);
-
-			float3 h_l  = MH::sampleGGXVNDF(wo_l, alpha, rng.nextFloat2());
-			float3 wi_l = 2.f * dot(wo_l, h_l) * h_l - wo_l;
+			float3 h_l  = MH::sampleGGXVNDF(ggxWo_l, ggxAlpha, rng.nextFloat2());
+			float3 wi_l = 2.f * dot(ggxWo_l, h_l) * h_l - ggxWo_l;
 			if (wi_l.z <= 0.f) { valid = false; }
 			else {
-				wi = MH::toWorld(wi_l, normal, tangent, bitangent);
-				float a2   = alpha * alpha;
-				float G1wo = 2.f * wo_l.z / (wo_l.z + sqrtf(a2 + (1.f - a2) * wo_l.z * wo_l.z));
+				wi = MH::toWorld(wi_l, normal, ggxTangent, ggxBitangent);
+				float a2   = ggxAlpha * ggxAlpha;
+				float G1wo = 2.f * ggxWo_l.z / (ggxWo_l.z + sqrtf(a2 + (1.f - a2) * ggxWo_l.z * ggxWo_l.z));
 				// VNDF importance sampling makes D and most of the pdf cancel, leaving
 				// throughput *= F * G2(wi,wo)/G1(wo) — see Heitz 2018. MH::ggxG2 returns
 				// the visibility term Vis = G2/(4*wo.z*wi.z), not G2 itself, so recover
 				// G2 by multiplying back the 4*wo.z*wi.z factor before dividing by G1(wo).
-				float vis   = MH::ggxG2(wi_l, wo_l, alpha);
-				float ratio = (vis * 4.f * wo_l.z * wi_l.z) / fmaxf(G1wo, 1e-7f);
+				float vis   = MH::ggxG2(wi_l, ggxWo_l, ggxAlpha);
+				float ratio = (vis * 4.f * ggxWo_l.z * wi_l.z) / fmaxf(G1wo, 1e-7f);
 
 				float cosTheta = fmaxf(dot(wo, normal), 0.f);
 				float f0 = EvalReflectance(mat, ray.m_Wavelengths.x);
@@ -303,6 +375,9 @@ namespace Vera::Spectral::HWSS {
 				thpt.z *= MH::schlickFresnel(f2, cosTheta) * ratio;
 				thpt.w *= MH::schlickFresnel(f3, cosTheta) * ratio;
 				pdfDirectional = 1.f; // VNDF importance sampling cancels pdf into the ratio above
+
+				float Dh = MH::evalGGX(h_l, ggxAlpha);
+				bsdfMisPdf = G1wo * Dh / fmaxf(4.f * ggxWo_l.z, 1e-7f);
 			}
 		} else { // Dielectric
 			float etaHero = EvalIOR(mat, ray.m_Wavelengths.x);
@@ -350,11 +425,11 @@ namespace Vera::Spectral::HWSS {
 		ray.m_Origin      = P + wi * 1e-4f;
 		ray.m_Direction   = wi;
 		ray.m_Throughput  = thpt;
-		ray.m_BsdfPdf     = pdfDirectional; // only meaningful when RAY_FLAG_DELTA is unset (Lambertian)
+		ray.m_BsdfPdf     = bsdfMisPdf; // only meaningful when RAY_FLAG_DELTA is unset (Lambertian, GGX)
 		ray.m_BounceCount += 1;
 		ray.flags &= ~RAY_FLAG_DELTA;
-		if (mat.type == MaterialType::GGX || mat.type == MaterialType::Dielectric)
-			ray.flags |= RAY_FLAG_DELTA;
+		if (mat.type == MaterialType::Dielectric)
+			ray.flags |= RAY_FLAG_DELTA; // no NEE/eval written for Dielectric yet — treat as delta
 		ray.m_RngState = rng.m_State;
 
 		if (ray.m_BounceCount >= maxBounces) ray.flags |= RAY_FLAG_DEAD;
