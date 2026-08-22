@@ -56,10 +56,12 @@ namespace Vera::Spectral::HWSS {
 
 
 
-	// NEE against LightBVH area lights, Lambertian surfaces only.
+	// NEE against LightBVH area lights, Lambertian surfaces only. `reflectance` is the
+	// surface's per-lane albedo, precomputed once by the caller and shared with the
+	// BSDF-sampling step below so it isn't evaluated twice per lane per shading call.
 	__device__ inline void SampleDirectLighting(
 		Core::GeometryBuffers& geom, const LightBVH& lightBvh, const Material* materials,
-		const float3& P, const float3& normal, const Material& mat,
+		const float3& P, const float3& normal, const float4& reflectance,
 		RayHWSS& ray, Core::PCG32& rng, FrameBufferHWSS& fb)
 	{
 		if (lightBvh.lightCount == 0) return;
@@ -93,10 +95,10 @@ namespace Vera::Spectral::HWSS {
 
 		float4 nee = ray.m_Throughput;
 		float scale = misWeight * cosSurf / solidPdf;
-		nee.x *= MH::evalLambertian(EvalReflectance(mat, ray.m_Wavelengths.x)) * scale;
-		nee.y *= MH::evalLambertian(EvalReflectance(mat, ray.m_Wavelengths.y)) * scale;
-		nee.z *= MH::evalLambertian(EvalReflectance(mat, ray.m_Wavelengths.z)) * scale;
-		nee.w *= MH::evalLambertian(EvalReflectance(mat, ray.m_Wavelengths.w)) * scale;
+		nee.x *= MH::evalLambertian(reflectance.x) * scale;
+		nee.y *= MH::evalLambertian(reflectance.y) * scale;
+		nee.z *= MH::evalLambertian(reflectance.z) * scale;
+		nee.w *= MH::evalLambertian(reflectance.w) * scale;
 
 		AccumulateContribution(fb, ray.pixelId, ray.m_Wavelengths, nee, ray.m_Pdf, LeVec);
 	}
@@ -248,8 +250,13 @@ namespace Vera::Spectral::HWSS {
 			return;
 		}
 
-		if (mat.type == MaterialType::Lambertian)
-			SampleDirectLighting(geom, lightBvh, materials, P, normal, mat, ray, rng, fb);
+		float4 lambertianReflectance = make_float4(0.f, 0.f, 0.f, 0.f);
+		if (mat.type == MaterialType::Lambertian) {
+			lambertianReflectance = make_float4(
+				EvalReflectance(mat, ray.m_Wavelengths.x), EvalReflectance(mat, ray.m_Wavelengths.y),
+				EvalReflectance(mat, ray.m_Wavelengths.z), EvalReflectance(mat, ray.m_Wavelengths.w));
+			SampleDirectLighting(geom, lightBvh, materials, P, normal, lambertianReflectance, ray, rng, fb);
+		}
 
 		float3 wi;
 		float  pdfDirectional = 0.f;
@@ -260,12 +267,9 @@ namespace Vera::Spectral::HWSS {
 			MH::sampleLambertian(normal, rng.nextFloat2(), wi, pdfDirectional);
 			if (pdfDirectional <= 0.f) valid = false;
 			else {
-				float r0 = EvalReflectance(mat, ray.m_Wavelengths.x);
-				float r1 = EvalReflectance(mat, ray.m_Wavelengths.y);
-				float r2 = EvalReflectance(mat, ray.m_Wavelengths.z);
-				float r3 = EvalReflectance(mat, ray.m_Wavelengths.w);
 				// cosine-weighted sampling cancels cosTheta/pdf, leaving throughput *= albedo
-				thpt.x *= r0; thpt.y *= r1; thpt.z *= r2; thpt.w *= r3;
+				thpt.x *= lambertianReflectance.x; thpt.y *= lambertianReflectance.y;
+				thpt.z *= lambertianReflectance.z; thpt.w *= lambertianReflectance.w;
 			}
 		} else if (mat.type == MaterialType::GGX) {
 			float3 tangent, bitangent;
