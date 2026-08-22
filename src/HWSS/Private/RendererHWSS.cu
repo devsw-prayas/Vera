@@ -42,6 +42,8 @@ namespace Vera::Spectral::HWSS {
 		MaterialSorter sorter;
 		sorter.Init(rayCount);
 
+		CIETexture cieTex = MakeCIETexture(LAMBDA_MIN, LAMBDA_MAX);
+
 		for (uint32_t sampleIdx = 0; sampleIdx < samplesPerPixel; ++sampleIdx) {
 			GeneratePrimaryRaysHWSSKernel<<<grid2D, block2D>>>(camera, d_raysA, sampleIdx, defaultMediumIdx);
 
@@ -52,11 +54,12 @@ namespace Vera::Spectral::HWSS {
 				uint32_t* order = sorter.Sort(geom, d_hits, activeCount, /*stream*/0);
 				ShadeKernelHWSSWavefront<<<grid1D, block1D>>>(
 					geom, d_raysA, d_hits, order, d_materials, d_media, lightBvh,
-					d_raysB, activeCount, fb, envMap, maxBounces);
+					d_raysB, activeCount, fb, envMap, maxBounces, cieTex.tex);
 				activeCount = compactor.Compact(d_raysB, d_raysA, activeCount, /*stream*/0);
 			}
 		}
 
+		FreeCIETexture(cieTex);
 		sorter.Destroy();
 		compactor.Destroy();
 

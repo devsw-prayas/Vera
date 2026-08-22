@@ -8,6 +8,7 @@
 #include "MediumHWSS.h"
 #include "LightBVHHWSS.h"
 #include "FrameBufferHWSS.cuh"
+#include "CIE.h"
 
 namespace Vera::Spectral::HWSS {
 	// Scatters each ray at its hit (or accumulates env/emissive contribution and
@@ -45,5 +46,6 @@ namespace Vera::Spectral::HWSS {
 		uint32_t rayCount,
 		FrameBufferHWSS fb,
 		EnvMapHWSS envMap,
-		uint32_t maxBounces);
+		uint32_t maxBounces,
+		cudaTextureObject_t cieTex);
 }

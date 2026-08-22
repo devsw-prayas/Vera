@@ -19,7 +19,7 @@ namespace Vera::Spectral::HWSS {
 	// lanes actually still contributing would silently under-weight every dispersed
 	// sample by that same factor — a real, sample-count-independent bias, not noise.
 	__device__ inline void AccumulateContribution(
-		FrameBufferHWSS& fb, uint32_t pixelId,
+		FrameBufferHWSS& fb, uint32_t pixelId, cudaTextureObject_t cieTex,
 		const float4& wavelengths, const float4& throughput, const float4& pdf, const float4& Le)
 	{
 		float wl[4]     = { wavelengths.x, wavelengths.y, wavelengths.z, wavelengths.w };
@@ -36,9 +36,10 @@ namespace Vera::Spectral::HWSS {
 		for (int lane = 0; lane < HWSS_LANES; ++lane) {
 			if (pdfArr[lane] <= 0.f) continue;
 			float contrib = thpt[lane] * leArr[lane] / (activeLanes * pdfArr[lane]);
-			xyz.x += contrib * CIE_X(wl[lane]);
-			xyz.y += contrib * CIE_Y(wl[lane]);
-			xyz.z += contrib * CIE_Z(wl[lane]);
+			float3 cie = SampleCIEXYZ(cieTex, wl[lane]);
+			xyz.x += contrib * cie.x;
+			xyz.y += contrib * cie.y;
+			xyz.z += contrib * cie.z;
 		}
 		atomicAdd(&fb.d_accumXYZ[pixelId].x, xyz.x);
 		atomicAdd(&fb.d_accumXYZ[pixelId].y, xyz.y);
@@ -62,7 +63,7 @@ namespace Vera::Spectral::HWSS {
 	__device__ inline void SampleDirectLighting(
 		Core::GeometryBuffers& geom, const LightBVH& lightBvh, const Material* materials,
 		const float3& P, const float3& normal, const float4& reflectance,
-		RayHWSS& ray, Core::PCG32& rng, FrameBufferHWSS& fb)
+		RayHWSS& ray, Core::PCG32& rng, FrameBufferHWSS& fb, cudaTextureObject_t cieTex)
 	{
 		if (lightBvh.lightCount == 0) return;
 
@@ -100,7 +101,7 @@ namespace Vera::Spectral::HWSS {
 		nee.z *= MH::evalLambertian(reflectance.z) * scale;
 		nee.w *= MH::evalLambertian(reflectance.w) * scale;
 
-		AccumulateContribution(fb, ray.pixelId, ray.m_Wavelengths, nee, ray.m_Pdf, LeVec);
+		AccumulateContribution(fb, ray.pixelId, cieTex, ray.m_Wavelengths, nee, ray.m_Pdf, LeVec);
 	}
 
 	__global__ void ShadeKernelHWSSWavefront(
@@ -115,7 +116,8 @@ namespace Vera::Spectral::HWSS {
 		uint32_t rayCount,
 		FrameBufferHWSS fb,
 		EnvMapHWSS envMap,
-		uint32_t maxBounces)
+		uint32_t maxBounces,
+		cudaTextureObject_t cieTex)
 	{
 		unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
 		if (idx >= rayCount) return;
@@ -183,7 +185,7 @@ namespace Vera::Spectral::HWSS {
 			float4 LeVec = make_float4(
 				EvalEnvMap(envMap, ray.m_Wavelengths.x), EvalEnvMap(envMap, ray.m_Wavelengths.y),
 				EvalEnvMap(envMap, ray.m_Wavelengths.z), EvalEnvMap(envMap, ray.m_Wavelengths.w));
-			AccumulateContribution(fb, ray.pixelId, ray.m_Wavelengths, ray.m_Throughput, ray.m_Pdf, LeVec);
+			AccumulateContribution(fb, ray.pixelId, cieTex, ray.m_Wavelengths, ray.m_Throughput, ray.m_Pdf, LeVec);
 			ray.flags |= RAY_FLAG_DEAD;
 			raysOut[idx] = ray;
 			return;
@@ -243,7 +245,7 @@ namespace Vera::Spectral::HWSS {
 				float4 thptWeighted = make_float4(
 					ray.m_Throughput.x * misWeight, ray.m_Throughput.y * misWeight,
 					ray.m_Throughput.z * misWeight, ray.m_Throughput.w * misWeight);
-				AccumulateContribution(fb, ray.pixelId, ray.m_Wavelengths, thptWeighted, ray.m_Pdf, LeVec);
+				AccumulateContribution(fb, ray.pixelId, cieTex, ray.m_Wavelengths, thptWeighted, ray.m_Pdf, LeVec);
 			}
 			ray.flags |= RAY_FLAG_DEAD;
 			raysOut[idx] = ray;
@@ -255,7 +257,7 @@ namespace Vera::Spectral::HWSS {
 			lambertianReflectance = make_float4(
 				EvalReflectance(mat, ray.m_Wavelengths.x), EvalReflectance(mat, ray.m_Wavelengths.y),
 				EvalReflectance(mat, ray.m_Wavelengths.z), EvalReflectance(mat, ray.m_Wavelengths.w));
-			SampleDirectLighting(geom, lightBvh, materials, P, normal, lambertianReflectance, ray, rng, fb);
+			SampleDirectLighting(geom, lightBvh, materials, P, normal, lambertianReflectance, ray, rng, fb, cieTex);
 		}
 
 		float3 wi;
