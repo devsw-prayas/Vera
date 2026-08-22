@@ -4,7 +4,6 @@
 #include <AABB.h>
 
 namespace BSPT::Spectral::HWSS::Core {
-	static constexpr float PI            = 3.14159265358979323846f;
 	static constexpr int   SPHERE_STACKS = 32;
 	static constexpr int   SPHERE_SLICES = 64;
 	static constexpr int   SPHERE_TRIS   = SPHERE_SLICES * 2 + (SPHERE_STACKS - 2) * SPHERE_SLICES * 2;

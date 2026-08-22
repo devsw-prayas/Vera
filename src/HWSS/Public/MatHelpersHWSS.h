@@ -2,18 +2,17 @@
 #include <cuda_runtime.h>
 #include <CudaMath.h>
 
+#include "SpectralConstants.h"
+#include "PhaseFunction.cuh"
+
 // Scalar (per-wavelength) port of FlashPath-FA2's RGBMatHelpers. The sampling
 // geometry (ONB, cosine hemisphere, GGX D/G, VNDF sampling, refraction) is
 // wavelength-agnostic and carried over unchanged; only Fresnel/reflectance
 // become single-wavelength scalars instead of RGB triples.
 namespace BSPT::Spectral::HWSS {
 	struct MatHelpersHWSS final {
-		static constexpr float PI = 3.14159265358979323846f;
-
 		__device__ __forceinline__ static void buildONB(const float3& normal, float3& tangent, float3& bitangent) {
-			float3 a = (fabsf(normal.z) < 0.999f) ? make_float3(0, 0, 1) : make_float3(1, 0, 0);
-			tangent = normalize(cross(a, normal));
-			bitangent = cross(normal, tangent);
+			Core::hgBuildONB(normal, tangent, bitangent);
 		}
 
 		__device__ __forceinline__ static float3 sampleCosineHemisphere(float2 u) {
@@ -46,7 +45,9 @@ namespace BSPT::Spectral::HWSS {
 		}
 
 		__device__ __forceinline__ static float schlickFresnel(float f0, float cosTheta) {
-			float t = powf(1.f - cosTheta, 5.f);
+			float m  = 1.f - cosTheta;
+			float m2 = m * m;
+			float t  = m2 * m2 * m;
 			return f0 + (1.f - f0) * t;
 		}
 
@@ -86,9 +87,7 @@ namespace BSPT::Spectral::HWSS {
 
 		__device__ __forceinline__ static float fresnelDielectric(float cosThetaI, float etaI, float etaT) {
 			if (cosThetaI < 0) {
-				etaI = etaI + etaT;
-				etaT = etaI - etaT;
-				etaI = etaI - etaT;
+				float tmp = etaI; etaI = etaT; etaT = tmp;
 				cosThetaI = fabsf(cosThetaI);
 			}
 

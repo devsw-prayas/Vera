@@ -26,25 +26,6 @@ namespace BSPT::Spectral::HWSS::Core {
 		return tmax >= tmin;
 	}
 
-	__device__ inline bool RayTriangle(const Ray& ray, const NXB::Triangle& tri, float tMax, float& t, float3& normal) {
-		float3 edge1 = tri.v1 - tri.v0;
-		float3 edge2 = tri.v2 - tri.v0;
-		float3 h = cross(ray.m_Direction, edge2);
-		float a = dot(edge1, h);
-		if (a > -FLT_EPSILON && a < FLT_EPSILON) return false;
-		float f = 1.f / a;
-		float3 s = ray.m_Origin - tri.v0;
-		float u = f * dot(s, h);
-		if (u < 0.f || u > 1.f) return false;
-		float3 q = cross(s, edge1);
-		float v = f * dot(ray.m_Direction, q);
-		if (v < 0.f || u + v > 1.f) return false;
-		t = f * dot(edge2, q);
-		if (t < ray.m_Tmin || t > tMax) return false;
-		normal = tri.Normal();
-		return true;
-	}
-
 	__device__ inline bool RayTriangle(const Ray& ray, const NXB::Triangle& tri, float tMax, float& t, float& U, float& V) {
 		float3 edge1 = tri.v1 - tri.v0;
 		float3 edge2 = tri.v2 - tri.v0;
@@ -63,37 +44,6 @@ namespace BSPT::Spectral::HWSS::Core {
 		U = u;
 		V = v;
 		return true;
-	}
-
-	__global__ void TraversalKernel(NXB::BVH2 bvh, NXB::Triangle* triangles, Ray* rays, HitRecord* hits, uint32_t rayCount) {
-		unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
-		if (idx >= rayCount) return;
-
-		Ray r = rays[idx];
-		HitRecord h{};
-		h.m_Hit = false;
-		h.m_T   = r.m_Tmax;
-
-		unsigned int stk[32];
-		stk[0] = bvh.nodeCount - 1;
-		int stkPtr = 0;
-		while (stkPtr >= 0) {
-			NXB::BVH2::Node node = bvh.nodes[stk[stkPtr--]];
-			if (!RayAABB(r, node.bounds, h.m_T)) continue;
-			if (node.leftChild == INVALID_IDX) {
-				float t; float3 normal;
-				if (RayTriangle(r, triangles[node.rightChild], h.m_T, t, normal)) {
-					h.m_T      = t;
-					h.m_Normal = normalize(normal);
-					h.m_PrimIdx = node.rightChild;
-					h.m_Hit    = true;
-				}
-			} else {
-				stk[++stkPtr] = node.rightChild;
-				stk[++stkPtr] = node.leftChild;
-			}
-		}
-		hits[idx] = h;
 	}
 
 	__global__ void TraversalKernelWavefront(GeometryBuffers geom, Ray* rays, WavefrontHitRecord* hits, uint32_t rayCount) {

@@ -2,19 +2,20 @@
 #include <cuda_runtime.h>
 #include <CudaMath.h>
 
+#include "CoreUtils.h"
+
 // Henyey-Greenstein phase function utilities (device-only).
 // Convention: wo points AWAY from the scatter event (toward viewer),
 //             wi points AWAY from the scatter event (toward next surface).
 // cosTheta = dot(wo, wi) = cos of the phase angle.
 
 namespace BSPT::Spectral::HWSS::Core {
-	static constexpr float HG_PI      = 3.14159265358979323846f;
 	static constexpr float HG_INV_4PI = 0.07957747154594766788f;  // 1 / (4π)
 
 	// p(cosTheta) = (1 - g²) / (4π (1 + g² - 2g·cosTheta)^(3/2))
 	__device__ __forceinline__ float HGPhaseEval(float g, float cosTheta) {
 		float denom = 1.f + g * g - 2.f * g * cosTheta;
-		return (1.f - g * g) / (4.f * HG_PI * denom * sqrtf(denom));
+		return (1.f - g * g) / (4.f * PI * denom * sqrtf(denom));
 	}
 
 	// Build tangent frame around axis n (Frisvad variant).
@@ -39,7 +40,7 @@ namespace BSPT::Spectral::HWSS::Core {
 		cosTheta = fmaxf(-1.f, fminf(1.f, cosTheta));
 
 		float sinTheta = sqrtf(fmaxf(0.f, 1.f - cosTheta * cosTheta));
-		float phi      = 2.f * HG_PI * u.y;
+		float phi      = 2.f * PI * u.y;
 
 		// Build frame around wo so that the sampled wi is relative to it
 		float3 T, B;

@@ -6,11 +6,7 @@
 #include "Triangle.h"
 
 namespace BSPT::Spectral::HWSS::Core {
-	struct MeshDesc final {
-		uint32_t m_FirstTri = 0;
-		uint32_t m_TrisCount = 0;
-		uint16_t m_MatId = 0;
-	};
+	static constexpr float PI = 3.14159265358979323846f;
 
 	struct Instance final {
 		float4 m_Transform[3];

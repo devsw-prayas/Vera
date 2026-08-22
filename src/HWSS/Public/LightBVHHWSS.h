@@ -27,6 +27,7 @@ namespace BSPT::Spectral::HWSS {
 		float3   bMax;
 		float3   coneAxis;
 		float    cosConeAngle;
+		float    sinConeAngle; // sqrt(1 - cosConeAngle^2), precomputed at build time
 		float    flux;
 		uint32_t leftChild;
 		uint32_t rightChild;

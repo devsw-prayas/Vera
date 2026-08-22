@@ -5,8 +5,6 @@
 #include <CudaMath.h>
 
 namespace BSPT::Spectral::HWSS {
-	static constexpr float CAM_PI = 3.14159265358979323846f;
-
 	__global__ void GeneratePrimaryRaysHWSSKernel(
 		Core::Camera camera, RayHWSS* rays,
 		unsigned int sampleIdx, unsigned char defaultMediumIdx)
@@ -38,7 +36,7 @@ namespace BSPT::Spectral::HWSS {
 			// Uniform disk sample via concentric mapping
 			float2 u  = rng.nextFloat2();
 			float  r  = sqrtf(u.x) * camera.m_LensRadius;
-			float  phi = 2.f * CAM_PI * u.y;
+			float  phi = 2.f * PI * u.y;
 			float3 lensOff = r * cosf(phi) * camera.m_Right + r * sinf(phi) * camera.m_Up;
 
 			float  tFocus  = camera.m_FocusDist / dot(d, camera.m_Forward);

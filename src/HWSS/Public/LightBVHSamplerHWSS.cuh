@@ -14,8 +14,7 @@ __device__ inline float lightNodeScore(const LightBVHNode& node, const float3& p
     float dist2 = fmaxf(dx*dx + dy*dy + dz*dz, 1e-4f);
     float dist  = sqrtf(dist2);
     float cosA  = (node.coneAxis.x*dx + node.coneAxis.y*dy + node.coneAxis.z*dz) / dist;
-    float sinHalf = sqrtf(fmaxf(1.f - node.cosConeAngle * node.cosConeAngle, 0.f));
-    float cosEff  = fmaxf(cosA - sinHalf, 0.f);
+    float cosEff  = fmaxf(cosA - node.sinConeAngle, 0.f);
     // Fallback: never give zero score so traversal never hard-excludes a node
     return node.flux * (cosEff + 1e-3f) / dist2;
 }

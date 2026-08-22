@@ -11,19 +11,29 @@ namespace BSPT::Spectral::HWSS {
 	// evaluated per-lane at shading time via EvalEmission).
 	static constexpr float kFluxLambda = 555.f;
 
-	static float triArea(float3 v0, float3 v1, float3 v2) {
+	// Unnormalized edge1 x edge2 — area and normal both derive from this single
+	// cross product instead of each recomputing it independently.
+	static float3 triCross(float3 v0, float3 v1, float3 v2) {
 		float ex = v1.x-v0.x, ey = v1.y-v0.y, ez = v1.z-v0.z;
 		float fx = v2.x-v0.x, fy = v2.y-v0.y, fz = v2.z-v0.z;
-		float cx = ey*fz - ez*fy, cy = ez*fx - ex*fz, cz = ex*fy - ey*fx;
-		return 0.5f * sqrtf(cx*cx + cy*cy + cz*cz);
+		return float3{ ey*fz - ez*fy, ez*fx - ex*fz, ex*fy - ey*fx };
+	}
+
+	static float triAreaFromCross(float3 c) {
+		return 0.5f * sqrtf(c.x*c.x + c.y*c.y + c.z*c.z);
+	}
+
+	static float3 triNormalFromCross(float3 c) {
+		float len = sqrtf(c.x*c.x + c.y*c.y + c.z*c.z);
+		return (len > 1e-9f) ? float3{c.x/len, c.y/len, c.z/len} : float3{0.f, 1.f, 0.f};
+	}
+
+	static float triArea(float3 v0, float3 v1, float3 v2) {
+		return triAreaFromCross(triCross(v0, v1, v2));
 	}
 
 	static float3 triNormal(float3 v0, float3 v1, float3 v2) {
-		float ex = v1.x-v0.x, ey = v1.y-v0.y, ez = v1.z-v0.z;
-		float fx = v2.x-v0.x, fy = v2.y-v0.y, fz = v2.z-v0.z;
-		float cx = ey*fz - ez*fy, cy = ez*fx - ex*fz, cz = ex*fy - ey*fx;
-		float len = sqrtf(cx*cx + cy*cy + cz*cz);
-		return (len > 1e-9f) ? float3{cx/len, cy/len, cz/len} : float3{0.f, 1.f, 0.f};
+		return triNormalFromCross(triCross(v0, v1, v2));
 	}
 
 	struct BuildLight {
@@ -133,8 +143,9 @@ namespace BSPT::Spectral::HWSS {
 				uint32_t i2 = hostIndices[t * 3 + 2];
 				float3 v0 = hostVertices[i0], v1 = hostVertices[i1], v2 = hostVertices[i2];
 
-				float  area = triArea(v0, v1, v2);
-				float3 n    = triNormal(v0, v1, v2);
+				float3 cross_ = triCross(v0, v1, v2);
+				float  area = triAreaFromCross(cross_);
+				float3 n    = triNormalFromCross(cross_);
 				cumArea    += area;
 				avgNormal.x += n.x * area;
 				avgNormal.y += n.y * area;
@@ -191,6 +202,7 @@ namespace BSPT::Spectral::HWSS {
 			g.bMax         = c.bMax;
 			g.coneAxis     = c.coneAxis;
 			g.cosConeAngle = c.cosConeAngle;
+			g.sinConeAngle = sqrtf(fmaxf(1.f - c.cosConeAngle * c.cosConeAngle, 0.f));
 			g.flux         = c.flux;
 			g.leftChild    = (c.left  == -1) ? 0xFFFFFFFFu : (uint32_t)c.left;
 			g.rightChild   = (c.right == -1) ? 0xFFFFFFFFu : (uint32_t)c.right;

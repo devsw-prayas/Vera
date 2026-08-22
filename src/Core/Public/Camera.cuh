@@ -17,6 +17,4 @@ namespace BSPT::Spectral::HWSS::Core {
 		unsigned int m_Width;
 		unsigned int m_Height;
 	};
-
-	__global__ void GeneratePrimaryRaysKernel(Camera camera, Ray* rays);
 }
