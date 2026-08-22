@@ -55,6 +55,21 @@ namespace Vera::Spectral::HWSS {
 		return (a2 + b2 > 0.f) ? a2 / (a2 + b2) : 0.f;
 	}
 
+	// Unbiased Russian roulette path termination: below minBounces every path
+	// continues (avoids prematurely truncating short paths where it barely
+	// helps), then survival probability tracks the throughput itself (higher
+	// remaining energy => more likely to keep tracing) and surviving lanes are
+	// rescaled by 1/q so the estimator stays unbiased in expectation.
+	__device__ inline bool RussianRoulette(float4& thpt, Core::PCG32& rng, uint32_t bounceCount, uint32_t minBounces = 4) {
+		if (bounceCount < minBounces) return true;
+		float maxComp = fmaxf(fmaxf(thpt.x, thpt.y), fmaxf(thpt.z, thpt.w));
+		float q = fminf(fmaxf(maxComp, 0.05f), 0.95f);
+		if (rng.nextFloat() > q) return false;
+		float invQ = 1.f / q;
+		thpt.x *= invQ; thpt.y *= invQ; thpt.z *= invQ; thpt.w *= invQ;
+		return true;
+	}
+
 
 
 	// NEE against LightBVH area lights, Lambertian surfaces only. `reflectance` is the
@@ -223,10 +238,17 @@ namespace Vera::Spectral::HWSS {
 					float phasePdf;
 					float3 wi = Core::HGPhaseSample(med.g, wo, rng.nextFloat2(), phasePdf);
 
+					ray.m_BounceCount += 1;
+					if (!RussianRoulette(thpt, rng, ray.m_BounceCount)) {
+						ray.flags |= RAY_FLAG_DEAD;
+						ray.m_RngState = rng.m_State;
+						raysOut[idx] = ray;
+						return;
+					}
+
 					ray.m_Origin      = scatterP;
 					ray.m_Direction   = wi;
 					ray.m_Throughput  = thpt;
-					ray.m_BounceCount += 1;
 					ray.flags &= ~RAY_FLAG_DELTA;
 					ray.m_RngState = rng.m_State;
 					if (ray.m_BounceCount >= maxBounces) ray.flags |= RAY_FLAG_DEAD;
@@ -422,11 +444,18 @@ namespace Vera::Spectral::HWSS {
 			return;
 		}
 
+		ray.m_BounceCount += 1;
+		if (!RussianRoulette(thpt, rng, ray.m_BounceCount)) {
+			ray.flags |= RAY_FLAG_DEAD;
+			ray.m_RngState = rng.m_State;
+			raysOut[idx] = ray;
+			return;
+		}
+
 		ray.m_Origin      = P + wi * 1e-4f;
 		ray.m_Direction   = wi;
 		ray.m_Throughput  = thpt;
 		ray.m_BsdfPdf     = bsdfMisPdf; // only meaningful when RAY_FLAG_DELTA is unset (Lambertian, GGX)
-		ray.m_BounceCount += 1;
 		ray.flags &= ~RAY_FLAG_DELTA;
 		if (mat.type == MaterialType::Dielectric)
 			ray.flags |= RAY_FLAG_DELTA; // no NEE/eval written for Dielectric yet — treat as delta
