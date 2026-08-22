@@ -13,7 +13,8 @@
 #include "SceneHWSS.h"
 #include "RendererHWSS.cuh"
 
-using namespace BSPT::Spectral::HWSS;
+using namespace Vera::Core;
+using namespace Vera::Spectral::HWSS;
 
 static void WritePPM(const char* path, const float4* pixels, uint32_t width, uint32_t height) {
 	FILE* f = fopen(path, "wb");
@@ -34,7 +35,7 @@ static void WritePPM(const char* path, const float4* pixels, uint32_t width, uin
 
 int main() {
 	// ── Materials ──────────────────────────────────────────────────────────
-	RGB2SpecTable rgb2spec = RGB2SpecTable::Load(BSPT_DATA_DIR "srgb.coeff");
+	RGB2SpecTable rgb2spec = RGB2SpecTable::Load(VERA_DATA_DIR "srgb.coeff");
 	if (rgb2spec.res == 0) {
 		fprintf(stderr, "Failed to load RGB2Spec table — aborting.\n");
 		return 1;
@@ -54,12 +55,12 @@ int main() {
 	std::vector<NXB::Triangle> hTris;
 	std::vector<uint16_t>      hMatIds;
 
-	Core::AppendBoxWalls(hPos, hNorms, hTris, hMatIds, 0, 1, 0, 0, 0);
-	Core::AppendSphereMesh(hPos, hNorms, hTris, hMatIds, make_float3(-0.45f, -0.65f, -0.1f), 0.35f, 2);
-	Core::AppendSphereMesh(hPos, hNorms, hTris, hMatIds, make_float3(0.45f, -0.55f, 0.3f), 0.45f, 3);
+	Vera::Core::AppendBoxWalls(hPos, hNorms, hTris, hMatIds, 0, 1, 0, 0, 0);
+	Vera::Core::AppendSphereMesh(hPos, hNorms, hTris, hMatIds, make_float3(-0.45f, -0.65f, -0.1f), 0.35f, 2);
+	Vera::Core::AppendSphereMesh(hPos, hNorms, hTris, hMatIds, make_float3(0.45f, -0.55f, 0.3f), 0.45f, 3);
 
-	Core::SceneGPU scene{};
-	Core::UploadScene(
+	Vera::Core::SceneGPU scene{};
+	Vera::Core::UploadScene(
 		hPos, hNorms, hTris, hMatIds,
 		hMaterials.data(), (uint32_t)hMaterials.size(), (uint32_t)sizeof(Material),
 		make_float3(-1.05f, -1.05f, -1.05f), make_float3(1.05f, 1.05f, 1.05f),
@@ -73,7 +74,7 @@ int main() {
 
 	// ── Camera ────────────────────────────────────────────────────────────
 	uint32_t width = 1920, height = 1080;
-	Core::Camera camera{};
+	Vera::Core::Camera camera{};
 	camera.m_Origin       = make_float3(0.f, 0.f, 3.4f);
 	camera.m_Forward      = make_float3(0.f, 0.f, -1.f);
 	camera.m_Right        = make_float3(1.f, 0.f, 0.f);
@@ -93,7 +94,7 @@ int main() {
 	printf("Rendering %ux%u...\n", width, height);
 	RenderHWSS(scene.geom, d_materials, lighting.d_media, lighting.lightBvh, envMap,
 		camera, fb, d_outRGB, /*samplesPerPixel*/ 512, /*maxBounces*/ 16,
-		/*defaultMediumIdx*/ 0, Core::ToneMapper::ACES, /*exposure*/ 1.2f);
+		/*defaultMediumIdx*/ 0, Vera::Core::ToneMapper::ACES, /*exposure*/ 1.2f);
 	cudaDeviceSynchronize();
 
 	cudaError_t err = cudaGetLastError();
@@ -110,7 +111,7 @@ int main() {
 	cudaFree(d_outRGB);
 	FreeFrameBuffer(fb);
 	FreeSceneLighting(lighting);
-	Core::FreeScene(scene);
+	Vera::Core::FreeScene(scene);
 	RGB2SpecTable::Free(rgb2spec);
 	return 0;
 }

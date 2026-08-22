@@ -9,7 +9,7 @@
 #include "LightBVHHWSS.h"
 #include "LightBVHBuilderHWSS.h"
 
-namespace BSPT::Spectral::HWSS {
+namespace Vera::Spectral::HWSS {
 	// Lighting-side companion to Core::SceneGPU: a LightBVH built from whichever
 	// triangles carry an Emissive material, plus an uploaded medium buffer.
 	// Built separately from Core::UploadScene because both need the (HWSS-only)

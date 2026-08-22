@@ -5,7 +5,7 @@
 #include "BVH.h"
 #include "Triangle.h"
 
-namespace BSPT::Spectral::HWSS::Core {
+namespace Vera::Core {
 	static constexpr float PI = 3.14159265358979323846f;
 
 	struct Instance final {

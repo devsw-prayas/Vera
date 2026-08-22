@@ -2,7 +2,7 @@
 #include "LightBVHHWSS.h"
 #include "MaterialHWSS.h"
 
-namespace BSPT::Spectral::HWSS {
+namespace Vera::Spectral::HWSS {
 	LightBVH BuildLightBVH(
 		const float3*   hostVertices,
 		const uint32_t* hostIndices,

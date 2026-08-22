@@ -111,3 +111,8 @@ renders/*
 .claude/
 .production/
 CLAUDE.md
+
+# Profiling (large regeneratable raw reports; keep summary CSVs)
+profiling/*.ncu-rep
+profiling/*.nsys-rep
+profiling/*.sqlite

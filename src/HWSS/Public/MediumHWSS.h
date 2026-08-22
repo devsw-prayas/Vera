@@ -4,7 +4,7 @@
 
 #include "RGB2Spec.h"
 
-namespace BSPT::Spectral::HWSS {
+namespace Vera::Spectral::HWSS {
 	// Homogeneous participating medium, spectral. Coefficients are physical
 	// (not bounded to [0,1]), so — unlike Material's reflectance — they're
 	// baked as a normalized spectral *shape* (RGB2Spec, in [0,1]) times a

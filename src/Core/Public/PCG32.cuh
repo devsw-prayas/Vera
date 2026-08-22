@@ -1,7 +1,7 @@
 #pragma once
 #include <cuda_runtime.h>
 
-namespace BSPT::Spectral::HWSS::Core {
+namespace Vera::Core {
 	struct PCG32 final {
 		unsigned long long m_State;
 

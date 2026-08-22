@@ -11,7 +11,7 @@
 // build time (baking Material structs on the host); the sigmoid-polynomial
 // evaluation itself runs per-shading-sample on the GPU. So the LUT stays
 // host-only — no need to keep it device-resident.
-namespace BSPT::Spectral::HWSS {
+namespace Vera::Spectral::HWSS {
 
 	struct RGBSigmoidPolynomial final {
 		float c0 = 0.f, c1 = 0.f, c2 = 0.f;

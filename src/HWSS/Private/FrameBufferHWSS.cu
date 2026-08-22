@@ -2,7 +2,7 @@
 #include "CIE.h"
 #include <CudaMath.h>
 
-namespace BSPT::Spectral::HWSS {
+namespace Vera::Spectral::HWSS {
 	FrameBufferHWSS AllocFrameBuffer(uint32_t width, uint32_t height) {
 		FrameBufferHWSS fb{};
 		fb.width  = width;

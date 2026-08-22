@@ -10,7 +10,7 @@
 #include "LightBVHHWSS.h"
 #include "FrameBufferHWSS.cuh"
 
-namespace BSPT::Spectral::HWSS {
+namespace Vera::Spectral::HWSS {
 	// Wavefront dispatch loop: per sample, generates primary rays then ping-pongs
 	// two RayHWSS buffers through traversal + shade for maxBounces iterations,
 	// accumulating spectral contributions into fb as it goes. On return, fb has

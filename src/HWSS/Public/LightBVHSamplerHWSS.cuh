@@ -4,7 +4,7 @@
 #include <cuda_runtime.h>
 #include <cfloat>
 
-namespace BSPT::Spectral::HWSS {
+namespace Vera::Spectral::HWSS {
 
 __device__ inline float lightNodeScore(const LightBVHNode& node, const float3& p) {
     float cx = (node.bMin.x + node.bMax.x) * 0.5f;

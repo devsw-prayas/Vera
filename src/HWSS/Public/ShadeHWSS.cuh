@@ -9,7 +9,7 @@
 #include "LightBVHHWSS.h"
 #include "FrameBufferHWSS.cuh"
 
-namespace BSPT::Spectral::HWSS {
+namespace Vera::Spectral::HWSS {
 	// Scatters each ray at its hit (or accumulates env/emissive contribution and
 	// kills it on miss/light hit), writing the next bounce's ray into raysOut.
 	// Per-lane m_Pdf is the wavelength-sampling pdf (fixed at ray-gen, zeroed on

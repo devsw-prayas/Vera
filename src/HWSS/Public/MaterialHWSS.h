@@ -5,7 +5,7 @@
 
 #include "RGB2Spec.h"
 
-namespace BSPT::Spectral::HWSS {
+namespace Vera::Spectral::HWSS {
 	enum class MaterialType : uint8_t {
 		Lambertian,
 		GGX,

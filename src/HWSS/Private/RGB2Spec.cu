@@ -13,7 +13,7 @@
 //   float    data[3 * res * res * res * 3]
 //   ... (trailing forward-model block, unused here, not read)
 
-namespace BSPT::Spectral::HWSS {
+namespace Vera::Spectral::HWSS {
 	static constexpr char kMagic[4] = { 'S','P','E','C' };
 
 	RGB2SpecTable RGB2SpecTable::Load(const char* path) {

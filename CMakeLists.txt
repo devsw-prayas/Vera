@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(BispectralPathTracer LANGUAGES CXX CUDA)
+project(Vera LANGUAGES CXX CUDA)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -15,7 +15,7 @@ file(GLOB_RECURSE ALL_INLINE      CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}
 file(GLOB_RECURSE ALL_CUDA_SRC    CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cu")
 file(GLOB_RECURSE ALL_CUDA_HDRS   CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cuh")
 
-add_executable(BispectralPathTracer
+add_executable(Vera
     ${ALL_HEADERS}
     ${ALL_CXX_SRC}
     ${ALL_INLINE}
@@ -23,31 +23,31 @@ add_executable(BispectralPathTracer
     ${ALL_CUDA_HDRS}
 )
 
-target_include_directories(BispectralPathTracer PUBLIC
+target_include_directories(Vera PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Core/Public
     ${CMAKE_CURRENT_SOURCE_DIR}/src/HWSS/Public
 )
 
-target_precompile_headers(BispectralPathTracer PRIVATE
+target_precompile_headers(Vera PRIVATE
     $<$<COMPILE_LANGUAGE:CXX>:${CMAKE_CURRENT_SOURCE_DIR}/src/Core/Public/PCH.h>
 )
 
-target_compile_options(BispectralPathTracer PRIVATE
+target_compile_options(Vera PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:
         -lineinfo
         --extended-lambda
     >
 )
 
-target_compile_definitions(BispectralPathTracer PRIVATE
+target_compile_definitions(Vera PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:__CUDACC__>
-    BSPT_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/src/HWSS/Data/"
+    VERA_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/src/HWSS/Data/"
 )
 
-set_target_properties(BispectralPathTracer PROPERTIES
+set_target_properties(Vera PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
 )
 
 add_subdirectory(external/NexusBVH)
 
-target_link_libraries(BispectralPathTracer PRIVATE NexusBVH)
+target_link_libraries(Vera PRIVATE NexusBVH)

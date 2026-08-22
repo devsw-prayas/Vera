@@ -7,7 +7,7 @@
 
 #include "CoreUtils.h"
 
-namespace BSPT::Spectral::HWSS::Core {
+namespace Vera::Core {
 
 	// Single-instance (BLAS==TLAS-instance-of-one) scene container.
 	// Material storage is untyped for now (raw bytes, matStride per element) since

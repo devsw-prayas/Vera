@@ -9,7 +9,7 @@
 // geometry (ONB, cosine hemisphere, GGX D/G, VNDF sampling, refraction) is
 // wavelength-agnostic and carried over unchanged; only Fresnel/reflectance
 // become single-wavelength scalars instead of RGB triples.
-namespace BSPT::Spectral::HWSS {
+namespace Vera::Spectral::HWSS {
 	struct MatHelpersHWSS final {
 		__device__ __forceinline__ static void buildONB(const float3& normal, float3& tangent, float3& bitangent) {
 			Core::hgBuildONB(normal, tangent, bitangent);

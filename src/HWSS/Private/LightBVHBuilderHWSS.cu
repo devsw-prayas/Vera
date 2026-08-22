@@ -5,7 +5,7 @@
 #include <cfloat>
 #include <cuda_runtime.h>
 
-namespace BSPT::Spectral::HWSS {
+namespace Vera::Spectral::HWSS {
 	// Representative wavelength for flux/importance weighting only (BVH node
 	// scoring doesn't need to be spectrally exact — actual radiance is always
 	// evaluated per-lane at shading time via EvalEmission).

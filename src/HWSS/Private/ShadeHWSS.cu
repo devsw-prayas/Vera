@@ -4,11 +4,12 @@
 #include "CIE.h"
 #include "PCG32.cuh"
 #include <PhaseFunction.cuh>
+#include <Traversal.cuh>
 #include <Triangle.h>
 #include <BVH.h>
 #include <CudaMath.h>
 
-namespace BSPT::Spectral::HWSS {
+namespace Vera::Spectral::HWSS {
 	using MH = MatHelpersHWSS;
 
 	// Adds a per-lane spectral contribution to the framebuffer: weight = 1/(activeLanes*pdf_lane).
@@ -53,79 +54,7 @@ namespace BSPT::Spectral::HWSS {
 		return (a2 + b2 > 0.f) ? a2 / (a2 + b2) : 0.f;
 	}
 
-	// ── Shadow ray occlusion (boolean-only TLAS/BLAS walk, early exit) ────────
-	__device__ inline bool RayAABBOcclusion(float3 o, float3 d, float tmin, float tmax, const NXB::AABB& aabb) {
-		float3 invD = make_float3(1.f / d.x, 1.f / d.y, 1.f / d.z);
-		float tminx = fminf((aabb.bMin.x - o.x) * invD.x, (aabb.bMax.x - o.x) * invD.x);
-		float tmaxx = fmaxf((aabb.bMin.x - o.x) * invD.x, (aabb.bMax.x - o.x) * invD.x);
-		float tminy = fminf((aabb.bMin.y - o.y) * invD.y, (aabb.bMax.y - o.y) * invD.y);
-		float tmaxy = fmaxf((aabb.bMin.y - o.y) * invD.y, (aabb.bMax.y - o.y) * invD.y);
-		float tminz = fminf((aabb.bMin.z - o.z) * invD.z, (aabb.bMax.z - o.z) * invD.z);
-		float tmaxz = fmaxf((aabb.bMin.z - o.z) * invD.z, (aabb.bMax.z - o.z) * invD.z);
-		float lo = fmaxf(tmin, fmaxf(tminx, fmaxf(tminy, tminz)));
-		float hi = fminf(tmax, fminf(tmaxx, fminf(tmaxy, tmaxz)));
-		return hi >= lo;
-	}
 
-	__device__ inline bool RayTriangleOcclusion(float3 o, float3 d, float tmin, float tmax, const NXB::Triangle& tri) {
-		float3 edge1 = tri.v1 - tri.v0;
-		float3 edge2 = tri.v2 - tri.v0;
-		float3 h = cross(d, edge2);
-		float a = dot(edge1, h);
-		if (a > -FLT_EPSILON && a < FLT_EPSILON) return false;
-		float f = 1.f / a;
-		float3 s = o - tri.v0;
-		float u = f * dot(s, h);
-		if (u < 0.f || u > 1.f) return false;
-		float3 q = cross(s, edge1);
-		float v = f * dot(d, q);
-		if (v < 0.f || u + v > 1.f) return false;
-		float t = f * dot(edge2, q);
-		return t >= tmin && t <= tmax;
-	}
-
-	__device__ bool ShadowOccluded(Core::GeometryBuffers geom, float3 origin, float3 dir, float tMax) {
-		float tmin = 1e-4f;
-		unsigned int tlasStk[32];
-		tlasStk[0] = geom.m_Tlas.nodeCount - 1;
-		int tlasStkPtr = 0;
-
-		while (tlasStkPtr >= 0) {
-			NXB::BVH2::Node tlasNode = geom.m_Tlas.nodes[tlasStk[tlasStkPtr--]];
-			if (!RayAABBOcclusion(origin, dir, tmin, tMax, tlasNode.bounds)) continue;
-
-			if (tlasNode.leftChild == INVALID_IDX) {
-				Core::Instance inst = geom.m_DevInstances[tlasNode.rightChild];
-				float3 lo = make_float3(
-					dot(make_float3(inst.m_InvTransform[0].x, inst.m_InvTransform[0].y, inst.m_InvTransform[0].z), origin) + inst.m_InvTransform[0].w,
-					dot(make_float3(inst.m_InvTransform[1].x, inst.m_InvTransform[1].y, inst.m_InvTransform[1].z), origin) + inst.m_InvTransform[1].w,
-					dot(make_float3(inst.m_InvTransform[2].x, inst.m_InvTransform[2].y, inst.m_InvTransform[2].z), origin) + inst.m_InvTransform[2].w);
-				float3 ld = make_float3(
-					dot(make_float3(inst.m_InvTransform[0].x, inst.m_InvTransform[0].y, inst.m_InvTransform[0].z), dir),
-					dot(make_float3(inst.m_InvTransform[1].x, inst.m_InvTransform[1].y, inst.m_InvTransform[1].z), dir),
-					dot(make_float3(inst.m_InvTransform[2].x, inst.m_InvTransform[2].y, inst.m_InvTransform[2].z), dir));
-
-				unsigned int blasStk[32];
-				blasStk[0] = inst.m_Blas.nodeCount - 1;
-				int blasStkPtr = 0;
-				while (blasStkPtr >= 0) {
-					NXB::BVH2::Node blasNode = inst.m_Blas.nodes[blasStk[blasStkPtr--]];
-					if (!RayAABBOcclusion(lo, ld, tmin, tMax, blasNode.bounds)) continue;
-					if (blasNode.leftChild == INVALID_IDX) {
-						uint32_t globalPrim = inst.m_FirstTri + blasNode.rightChild;
-						if (RayTriangleOcclusion(lo, ld, tmin, tMax, geom.m_BvhTris[globalPrim])) return true;
-					} else {
-						blasStk[++blasStkPtr] = blasNode.rightChild;
-						blasStk[++blasStkPtr] = blasNode.leftChild;
-					}
-				}
-			} else {
-				tlasStk[++tlasStkPtr] = tlasNode.rightChild;
-				tlasStk[++tlasStkPtr] = tlasNode.leftChild;
-			}
-		}
-		return false;
-	}
 
 	// NEE against LightBVH area lights, Lambertian surfaces only.
 	__device__ inline void SampleDirectLighting(
@@ -150,7 +79,7 @@ namespace BSPT::Spectral::HWSS {
 		float solidPdf = ls.pdf * dist2 / cosLight;
 		if (solidPdf <= 0.f) return;
 
-		if (ShadowOccluded(geom, P + normal * 1e-4f, wi, dist - 2e-3f)) return;
+		if (Vera::Core::TraverseAnyHit(geom, P + normal * 1e-4f, wi, 1e-4f, dist - 2e-3f)) return;
 
 		const Material& lmat = materials[ls.materialId];
 		float4 LeVec = make_float4(

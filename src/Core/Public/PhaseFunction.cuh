@@ -9,7 +9,7 @@
 //             wi points AWAY from the scatter event (toward next surface).
 // cosTheta = dot(wo, wi) = cos of the phase angle.
 
-namespace BSPT::Spectral::HWSS::Core {
+namespace Vera::Core {
 	static constexpr float HG_INV_4PI = 0.07957747154594766788f;  // 1 / (4π)
 
 	// p(cosTheta) = (1 - g²) / (4π (1 + g² - 2g·cosTheta)^(3/2))

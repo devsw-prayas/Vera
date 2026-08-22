@@ -4,7 +4,7 @@
 
 #include "RGB2Spec.h"
 
-namespace BSPT::Spectral::HWSS {
+namespace Vera::Spectral::HWSS {
 	// Constant-radiance environment (uniform sky/background). Baked the same
 	// way as an emissive Material: an artist RGB color upsampled once on the
 	// host via RGB2SpecLookup, then scaled by intensity per shading sample.

@@ -1,6 +1,6 @@
 #pragma once
 
-namespace BSPT::Spectral::HWSS {
+namespace Vera::Spectral::HWSS {
 	static constexpr float PI = 3.14159265358979323846f;
 
 	// Visible-range sampling bounds shared by wavelength sampling and material evaluation.

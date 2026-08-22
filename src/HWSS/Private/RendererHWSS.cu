@@ -5,7 +5,7 @@
 #include "CIE.h"
 #include <Traversal.cuh>
 
-namespace BSPT::Spectral::HWSS {
+namespace Vera::Spectral::HWSS {
 	void RenderHWSS(
 		const Core::GeometryBuffers& geom,
 		const Material* d_materials,

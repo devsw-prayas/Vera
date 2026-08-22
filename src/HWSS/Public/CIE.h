@@ -6,7 +6,7 @@
 // (Wyman, Sloan & Shirley, "Simple Analytic Approximations to the CIE XYZ
 // Color Matching Functions", JCGT 2013) — avoids shipping/transcribing a
 // full tabulated CMF, accurate enough for path tracer wavelength->XYZ.
-namespace BSPT::Spectral::HWSS {
+namespace Vera::Spectral::HWSS {
 	__host__ __device__ inline float CIEGaussian(float x, float mu, float sigma1, float sigma2) {
 		float sigma = (x < mu) ? sigma1 : sigma2;
 		float t = (x - mu) / sigma;

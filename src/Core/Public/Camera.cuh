@@ -2,7 +2,7 @@
 #include <cuda_runtime.h>
 #include "Ray.h"
 
-namespace BSPT::Spectral::HWSS::Core {
+namespace Vera::Core {
 
 	struct Camera final {
 		float3 m_Origin;

@@ -2,7 +2,7 @@
 #include <cuda_runtime.h>
 #include <vector_types.h>
 
-namespace BSPT::Spectral::HWSS {
+namespace Vera::Spectral::HWSS {
 	struct LightSample {
 		float3   position;
 		float3   normal;

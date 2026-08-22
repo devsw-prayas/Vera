@@ -2,7 +2,7 @@
 #include <cuda_runtime.h>
 #include <cmath>
 
-namespace BSPT::Spectral::HWSS::Core {
+namespace Vera::Core {
 	enum class ToneMapper { Reinhard, ACES, AgX, Linear };
 
 	//  Reinhard
@@ -109,4 +109,4 @@ namespace BSPT::Spectral::HWSS::Core {
 		}
 		return tonemapAgX(c);
 	}
-} // namespace BSPT::Spectral::HWSS::Core
+} // namespace Vera::Core

@@ -2,7 +2,7 @@
 #include <cuda_runtime.h>
 #include <vector_types.h>
 
-namespace BSPT::Spectral::HWSS::Core {
+namespace Vera::Core {
 	struct Ray final {
 		float3 m_Origin;
 		float3 m_Direction;

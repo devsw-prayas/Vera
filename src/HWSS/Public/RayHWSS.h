@@ -1,7 +1,7 @@
 #pragma once
 #include <vector_types.h>
 
-namespace BSPT::Spectral::HWSS {
+namespace Vera::Spectral::HWSS {
 	static constexpr unsigned char RAY_FLAG_DEAD      = 0x01;
 	static constexpr unsigned char RAY_FLAG_DELTA     = 0x02;
 	// Set once a wavelength-dependent (dispersive) event is sampled: per Wilkie et al.,
