@@ -36,6 +36,7 @@ target_compile_options(Vera PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:
         -lineinfo
         --extended-lambda
+        -Xcompiler=/Zc:preprocessor
     >
 )
 

@@ -118,7 +118,6 @@ namespace Vera::Spectral::HWSS {
 		if (idx >= rayCount) return;
 
 		RayHWSS ray = raysIn[idx];
-		if (ray.flags & RAY_FLAG_DEAD) { raysOut[idx] = ray; return; }
 
 		Core::WavefrontHitRecord hit = hits[idx];
 
