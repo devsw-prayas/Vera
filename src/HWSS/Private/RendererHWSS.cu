@@ -5,6 +5,7 @@
 #include "CIE.h"
 #include <Traversal.cuh>
 #include "RayCompactionHWSS.cuh"
+#include "MaterialSortHWSS.cuh"
 
 namespace Vera::Spectral::HWSS {
 	void RenderHWSS(
@@ -38,6 +39,9 @@ namespace Vera::Spectral::HWSS {
 		RayCompactor compactor;
 		compactor.Init(rayCount);
 
+		MaterialSorter sorter;
+		sorter.Init(rayCount);
+
 		for (uint32_t sampleIdx = 0; sampleIdx < samplesPerPixel; ++sampleIdx) {
 			GeneratePrimaryRaysHWSSKernel<<<grid2D, block2D>>>(camera, d_raysA, sampleIdx, defaultMediumIdx);
 
@@ -45,13 +49,15 @@ namespace Vera::Spectral::HWSS {
 			for (uint32_t bounce = 0; bounce < maxBounces && activeCount > 0; ++bounce) {
 				dim3 grid1D((activeCount + block1D.x - 1) / block1D.x);
 				Core::TraversalKernelWavefront<<<grid1D, block1D>>>(geom, d_raysA, d_hits, activeCount);
+				uint32_t* order = sorter.Sort(geom, d_hits, activeCount, /*stream*/0);
 				ShadeKernelHWSSWavefront<<<grid1D, block1D>>>(
-					geom, d_raysA, d_hits, d_materials, d_media, lightBvh,
+					geom, d_raysA, d_hits, order, d_materials, d_media, lightBvh,
 					d_raysB, activeCount, fb, envMap, maxBounces);
 				activeCount = compactor.Compact(d_raysB, d_raysA, activeCount, /*stream*/0);
 			}
 		}
 
+		sorter.Destroy();
 		compactor.Destroy();
 
 		cudaFree(d_raysA);

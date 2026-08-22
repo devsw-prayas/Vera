@@ -6,9 +6,8 @@ namespace Vera::Core {
 // ── Shared AABB/triangle intersection primitives (raw float3, no Ray struct) ──
 
 __device__ inline bool RayAABBf(
-	float3 o, float3 d, float tmin, float curTmax, const NXB::AABB& aabb)
+	float3 o, float3 invD, float tmin, float curTmax, const NXB::AABB& aabb)
 {
-	float3 invD = make_float3(1.f / d.x, 1.f / d.y, 1.f / d.z);
 	float tminx = fminf((aabb.bMin.x - o.x) * invD.x, (aabb.bMax.x - o.x) * invD.x);
 	float tmaxx = fmaxf((aabb.bMin.x - o.x) * invD.x, (aabb.bMax.x - o.x) * invD.x);
 	float tminy = fminf((aabb.bMin.y - o.y) * invD.y, (aabb.bMax.y - o.y) * invD.y);
@@ -54,13 +53,15 @@ __device__ WavefrontHitRecord TraverseBVH(
 	h.m_Hit = false;
 	h.t     = tmax;
 
+	float3 invD = make_float3(1.f / direction.x, 1.f / direction.y, 1.f / direction.z);
+
 	unsigned int tlasStk[32];
 	tlasStk[0] = geom.m_Tlas.nodeCount - 1;
 	int tlasStkPtr = 0;
 
 	while (tlasStkPtr >= 0) {
 		NXB::BVH2::Node tlasNode = geom.m_Tlas.nodes[tlasStk[tlasStkPtr--]];
-		if (!RayAABBf(origin, direction, tmin, h.t, tlasNode.bounds)) continue;
+		if (!RayAABBf(origin, invD, tmin, h.t, tlasNode.bounds)) continue;
 
 		if (tlasNode.leftChild == INVALID_IDX) {
 			uint32_t instIdx = tlasNode.rightChild;
@@ -75,6 +76,7 @@ __device__ WavefrontHitRecord TraverseBVH(
 				dot(make_float3(inst.m_InvTransform[0].x, inst.m_InvTransform[0].y, inst.m_InvTransform[0].z), direction),
 				dot(make_float3(inst.m_InvTransform[1].x, inst.m_InvTransform[1].y, inst.m_InvTransform[1].z), direction),
 				dot(make_float3(inst.m_InvTransform[2].x, inst.m_InvTransform[2].y, inst.m_InvTransform[2].z), direction));
+			float3 invLd = make_float3(1.f / ld.x, 1.f / ld.y, 1.f / ld.z);
 
 			unsigned int blasStk[32];
 			blasStk[0] = inst.m_Blas.nodeCount - 1;
@@ -82,7 +84,7 @@ __device__ WavefrontHitRecord TraverseBVH(
 
 			while (blasStkPtr >= 0) {
 				NXB::BVH2::Node blasNode = inst.m_Blas.nodes[blasStk[blasStkPtr--]];
-				if (!RayAABBf(lo, ld, tmin, h.t, blasNode.bounds)) continue;
+				if (!RayAABBf(lo, invLd, tmin, h.t, blasNode.bounds)) continue;
 
 				if (blasNode.leftChild == INVALID_IDX) {
 					uint32_t globalPrim = inst.m_FirstTri + blasNode.rightChild;

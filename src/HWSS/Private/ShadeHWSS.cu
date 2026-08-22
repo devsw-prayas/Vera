@@ -105,6 +105,7 @@ namespace Vera::Spectral::HWSS {
 		Core::GeometryBuffers geom,
 		RayHWSS* raysIn,
 		Core::WavefrontHitRecord* hits,
+		const uint32_t* order,
 		const Material* materials,
 		const MediumHWSS* media,
 		LightBVH lightBvh,
@@ -117,9 +118,10 @@ namespace Vera::Spectral::HWSS {
 		unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
 		if (idx >= rayCount) return;
 
-		RayHWSS ray = raysIn[idx];
+		unsigned int srcIdx = order[idx];
+		RayHWSS ray = raysIn[srcIdx];
 
-		Core::WavefrontHitRecord hit = hits[idx];
+		Core::WavefrontHitRecord hit = hits[srcIdx];
 
 		Core::PCG32 rng;
 		rng.m_State = ray.m_RngState;

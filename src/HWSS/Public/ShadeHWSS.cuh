@@ -37,6 +37,7 @@ namespace Vera::Spectral::HWSS {
 		Core::GeometryBuffers geom,
 		RayHWSS* raysIn,
 		Core::WavefrontHitRecord* hits,
+		const uint32_t* order,
 		const Material* materials,
 		const MediumHWSS* media,
 		LightBVH lightBvh,
