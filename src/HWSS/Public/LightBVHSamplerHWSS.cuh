@@ -100,37 +100,26 @@ __device__ inline LightSample SampleLightBVH(
     return ls;
 }
 
-// Returns true if the subtree rooted at nodeIdx contains targetLight as a leaf.
-// Light counts are small (typically ≤16), so this DFS is cheap.
-__device__ inline bool lightInSubtree(const LightBVH& bvh, uint32_t nodeIdx, uint32_t targetLight) {
-    uint32_t stk[32];
-    int stkPtr = 0;
-    stk[stkPtr++] = nodeIdx;
-    while (stkPtr > 0) {
-        uint32_t n = stk[--stkPtr];
-        if (bvh.nodes[n].leftChild == 0xFFFFFFFFu) {
-            if (bvh.nodes[n].lightIdx == targetLight) return true;
-        } else {
-            stk[stkPtr++] = bvh.nodes[n].leftChild;
-            stk[stkPtr++] = bvh.nodes[n].rightChild;
-        }
-    }
-    return false;
-}
-
 // Computes the area-measure PDF for a BSDF ray that happened to hit an emissive triangle.
 // Replays the stochastic BVH traversal from shadingPt using the same score function as
 // SampleLightBVH, accumulating exact branching probabilities instead of the flux-ratio
 // approximation (which is wrong for multi-light scenes with distance/angle variation).
+// Walks the light's precomputed root-to-leaf path (built once, host-side, in
+// LightBVHBuilderHWSS.cu) instead of re-deriving direction via a subtree DFS at each level —
+// O(depth) instead of O(depth * subtree size).
 __device__ inline float EmissiveHitPdf(const LightBVH& bvh, uint32_t primIdx, const float3& shadingPt) {
     if (primIdx >= bvh.totalPrimCount || bvh.lightCount == 0 || bvh.nodeCount == 0) return 0.f;
     uint32_t targetLight = bvh.primToLight[primIdx];
     if (targetLight == 0xFFFFFFFFu) return 0.f;
 
+    const LightEntry& light = bvh.lights[targetLight];
+    uint32_t pathBits  = light.pathBits;
+    uint8_t  pathDepth = light.pathDepth;
+
     uint32_t nodeIdx      = 0;
     float    traversalPdf = 1.f;
 
-    while (bvh.nodes[nodeIdx].leftChild != 0xFFFFFFFFu) {
+    for (uint8_t d = 0; d < pathDepth; ++d) {
         const LightBVHNode& node = bvh.nodes[nodeIdx];
         uint32_t L = node.leftChild;
         uint32_t R = node.rightChild;
@@ -140,7 +129,8 @@ __device__ inline float EmissiveHitPdf(const LightBVH& bvh, uint32_t primIdx, co
         float total  = scoreL + scoreR;
         float pL     = (total > 0.f) ? scoreL / total : 0.5f;
 
-        if (lightInSubtree(bvh, L, targetLight)) {
+        bool goRight = (pathBits >> d) & 1u;
+        if (!goRight) {
             traversalPdf *= pL;
             nodeIdx = L;
         } else {
@@ -149,7 +139,7 @@ __device__ inline float EmissiveHitPdf(const LightBVH& bvh, uint32_t primIdx, co
         }
     }
 
-    return traversalPdf / bvh.lights[targetLight].totalArea;
+    return traversalPdf / light.totalArea;
 }
 
 }

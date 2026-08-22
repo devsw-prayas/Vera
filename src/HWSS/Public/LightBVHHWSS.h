@@ -20,6 +20,8 @@ namespace Vera::Spectral::HWSS {
 		uint32_t firstGlobalTri; // global primIdx of first triangle in this group
 		uint32_t firstTri;       // index into triAreaCDF[]
 		uint32_t triCount;
+		uint32_t pathBits;       // bit i = child taken at depth i (0=left,1=right) during BVH build
+		uint8_t  pathDepth;      // levels from root to this light's leaf
 	};
 
 	struct LightBVHNode {

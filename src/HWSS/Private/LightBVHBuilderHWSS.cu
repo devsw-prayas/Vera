@@ -51,7 +51,7 @@ namespace Vera::Spectral::HWSS {
 		uint32_t lightIdx;
 	};
 
-	static int buildRecursive(std::vector<BuildLight>& lights, std::vector<CPUNode>& nodes, int start, int end) {
+	static int buildRecursive(std::vector<BuildLight>& lights, std::vector<CPUNode>& nodes, int start, int end, uint32_t pathBits = 0, uint8_t depth = 0) {
 		CPUNode node{};
 		node.bMin = {FLT_MAX, FLT_MAX, FLT_MAX};
 		node.bMax = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
@@ -85,6 +85,8 @@ namespace Vera::Spectral::HWSS {
 		if (end - start == 1) {
 			node.left = node.right = -1;
 			node.lightIdx = lights[start].lightIdx;
+			lights[start].entry.pathBits  = pathBits;
+			lights[start].entry.pathDepth = depth;
 			int idx = (int)nodes.size();
 			nodes.push_back(node);
 			return idx;
@@ -102,8 +104,8 @@ namespace Vera::Spectral::HWSS {
 
 		int nodeIdx = (int)nodes.size();
 		nodes.push_back(node);
-		int left  = buildRecursive(lights, nodes, start, mid);
-		int right = buildRecursive(lights, nodes, mid, end);
+		int left  = buildRecursive(lights, nodes, start, mid, pathBits, (uint8_t)(depth + 1));
+		int right = buildRecursive(lights, nodes, mid, end, pathBits | (1u << depth), (uint8_t)(depth + 1));
 		nodes[nodeIdx].left  = left;
 		nodes[nodeIdx].right = right;
 		return nodeIdx;
