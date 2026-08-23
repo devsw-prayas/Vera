@@ -71,13 +71,119 @@ namespace Vera::Spectral::HWSS {
 		return true;
 	}
 
+	// Woodcock/spectral tracking through a heterogeneous medium (Kutz, Habel, Li & Novák 2017,
+	// "Spectral and Decomposition Tracking for Rendering Heterogeneous Volumes", Algorithm 4,
+	// with the history-aware average-based collision probabilities of their Section 5.1.2 —
+	// `thpt` (already the path's accumulated per-lane throughput) IS exactly the "path history"
+	// weight vector their formula calls for, so no separate bookkeeping is needed. P_a is folded
+	// to 0 per their Section 5.1.3 ("if the medium is non-emissive, we can further reduce the
+	// throughput by not simulating absorption collisions") — matching the existing homogeneous
+	// scheme's model below, which also has no separate terminal-absorption state, only
+	// scatter-vs-ballistic.
+	//
+	// The majorant (med.majorantSigmaT) must bound sigmaT(x,lambda) for every position AND every
+	// visible wavelength simultaneously (see MediumHWSS.h) — distance is sampled once, using
+	// this single scalar majorant, shared across all 4 lanes; each lane's own physical
+	// coefficient is folded in via the per-lane weight update below, which is what lets 4
+	// spectrally-varying lanes share one coherent distance sample instead of needing 4
+	// independent free-flight walks.
+	//
+	// Returns true if a real scattering collision was found before tMax (thpt updated to the
+	// accumulated weight through and including that collision; scatterT is the distance); false
+	// if the walk reached tMax without one (thpt updated for the ballistic pass-through).
+	__device__ inline bool HeterogeneousFreeFlight(
+		const MediumHWSS& med, float3 origin, float3 dir, float tMax,
+		const float wl[4], float4& thpt, HybridRNG& rng, float& scatterT)
+	{
+		float majorant = med.majorantSigmaT;
+		if (majorant <= 0.f) { scatterT = tMax; return false; }
 
+		float* thptArr[4] = { &thpt.x, &thpt.y, &thpt.z, &thpt.w };
+		float t = 0.f;
+
+		for (int iter = 0; iter < 1024; ++iter) { // safety cap, same defensive convention as the BVH traversal stacks
+			float u = rng.nextFloat();
+			t += -logf(fmaxf(1.f - u, 1e-8f)) / majorant;
+			if (t >= tMax) { scatterT = tMax; return false; }
+
+			float3 p = origin + t * dir;
+			float sigmaS[4], sigmaT_[4];
+			float avgS = 0.f, avgN = 0.f;
+			for (int lane = 0; lane < HWSS_LANES; ++lane) {
+				sigmaT_[lane] = EvalSigmaTAt(med, p, wl[lane]);
+				sigmaS[lane]  = EvalSigmaSAt(med, p, wl[lane]);
+				float sigmaN  = fmaxf(majorant - sigmaT_[lane], 0.f);
+				avgS += fabsf(sigmaS[lane] * (*thptArr[lane]));
+				avgN += fabsf(sigmaN       * (*thptArr[lane]));
+			}
+			avgS *= 0.25f; avgN *= 0.25f;
+			float c = avgS + avgN;
+			if (c <= 1e-12f) continue; // numerically vacuum here -- treat as a null collision, keep marching
+
+			float pScatter = avgS / c;
+			if (rng.nextFloat() < pScatter) {
+				for (int lane = 0; lane < HWSS_LANES; ++lane)
+					*thptArr[lane] *= sigmaS[lane] / (majorant * pScatter);
+				scatterT = t;
+				return true;
+			} else {
+				float pNull = 1.f - pScatter;
+				for (int lane = 0; lane < HWSS_LANES; ++lane) {
+					float sigmaN = fmaxf(majorant - sigmaT_[lane], 0.f);
+					*thptArr[lane] *= sigmaN / (majorant * pNull);
+				}
+			}
+		}
+		scatterT = tMax;
+		return false; // safety cap hit -- ballistic pass-through rather than looping forever
+	}
+
+	// Per-lane transmittance along a shadow-ray segment through a medium — used for NEE
+	// occlusion through participating media, which previously used a purely binary any-hit test
+	// with no medium attenuation at all (true for both homogeneous and heterogeneous media; this
+	// closes that gap for both). Homogeneous media get the exact analytic transmittance (zero
+	// variance, and the current demo scene's only medium usage would be this branch).
+	// Heterogeneous media use ratio tracking (Novák et al. 2014): unlike
+	// HeterogeneousFreeFlight, this walk never "stops" at a collision — every majorant-rate
+	// event along the segment contributes a sigmaN/majorant factor regardless of type, since
+	// this estimates pure survival probability, not a scattered path.
+	__device__ inline float4 EvalTransmittance(
+		const MediumHWSS& med, float3 origin, float3 dir, float segLength, const float4& wavelengths, HybridRNG& rng)
+	{
+		if (!IsHeterogeneous(med)) {
+			return make_float4(
+				expf(-EvalSigmaT(med, wavelengths.x) * segLength), expf(-EvalSigmaT(med, wavelengths.y) * segLength),
+				expf(-EvalSigmaT(med, wavelengths.z) * segLength), expf(-EvalSigmaT(med, wavelengths.w) * segLength));
+		}
+
+		float majorant = med.majorantSigmaT;
+		if (majorant <= 0.f) return make_float4(1.f, 1.f, 1.f, 1.f);
+
+		float wl[4] = { wavelengths.x, wavelengths.y, wavelengths.z, wavelengths.w };
+		float4 tr = make_float4(1.f, 1.f, 1.f, 1.f);
+		float* trArr[4] = { &tr.x, &tr.y, &tr.z, &tr.w };
+
+		float t = 0.f;
+		for (int iter = 0; iter < 1024; ++iter) {
+			float u = rng.nextFloat();
+			t += -logf(fmaxf(1.f - u, 1e-8f)) / majorant;
+			if (t >= segLength) break;
+
+			float3 p = origin + t * dir;
+			for (int lane = 0; lane < HWSS_LANES; ++lane) {
+				float sigmaTLocal = EvalSigmaTAt(med, p, wl[lane]);
+				float sigmaN = fmaxf(majorant - sigmaTLocal, 0.f);
+				*trArr[lane] *= sigmaN / majorant;
+			}
+		}
+		return tr;
+	}
 
 	// NEE against LightBVH area lights, Lambertian surfaces only. `reflectance` is the
 	// surface's per-lane albedo, precomputed once by the caller and shared with the
 	// BSDF-sampling step below so it isn't evaluated twice per lane per shading call.
 	__device__ inline void SampleDirectLighting(
-		Core::GeometryBuffers& geom, const LightBVH& lightBvh, const Material* materials,
+		Core::GeometryBuffers& geom, const LightBVH& lightBvh, const Material* materials, const MediumHWSS* media,
 		const float3& P, const float3& normal, const float4& reflectance,
 		RayHWSS& ray, HybridRNG& rng, FrameBufferHWSS& fb, cudaTextureObject_t cieTex)
 	{
@@ -100,6 +206,10 @@ namespace Vera::Spectral::HWSS {
 
 		if (Vera::Core::TraverseAnyHit(geom, P + normal * 1e-4f, wi, 1e-4f, dist - 2e-3f)) return;
 
+		float4 tr = make_float4(1.f, 1.f, 1.f, 1.f);
+		if (ray.m_MediumIdx != 0)
+			tr = EvalTransmittance(media[ray.m_MediumIdx - 1], P + normal * 1e-4f, wi, dist - 2e-3f, ray.m_Wavelengths, rng);
+
 		const Material& lmat = materials[ls.materialId];
 		float4 LeVec = make_float4(
 			EvalEmission(lmat, ray.m_Wavelengths.x), EvalEmission(lmat, ray.m_Wavelengths.y),
@@ -112,10 +222,10 @@ namespace Vera::Spectral::HWSS {
 
 		float4 nee = ray.m_Throughput;
 		float scale = misWeight * cosSurf / solidPdf;
-		nee.x *= MH::evalLambertian(reflectance.x) * scale;
-		nee.y *= MH::evalLambertian(reflectance.y) * scale;
-		nee.z *= MH::evalLambertian(reflectance.z) * scale;
-		nee.w *= MH::evalLambertian(reflectance.w) * scale;
+		nee.x *= MH::evalLambertian(reflectance.x) * scale * tr.x;
+		nee.y *= MH::evalLambertian(reflectance.y) * scale * tr.y;
+		nee.z *= MH::evalLambertian(reflectance.z) * scale * tr.z;
+		nee.w *= MH::evalLambertian(reflectance.w) * scale * tr.w;
 
 		AccumulateContribution(fb, ray.pixelId, cieTex, ray.m_Wavelengths, nee, ray.m_Pdf, LeVec);
 	}
@@ -128,7 +238,7 @@ namespace Vera::Spectral::HWSS {
 	// textbook-correct dot(wo,h) here instead would make the two MIS strategies estimate
 	// slightly different functions and bias the combined estimate.
 	__device__ inline void SampleDirectLightingGGX(
-		Core::GeometryBuffers& geom, const LightBVH& lightBvh, const Material* materials,
+		Core::GeometryBuffers& geom, const LightBVH& lightBvh, const Material* materials, const MediumHWSS* media,
 		const float3& P, const float3& normal, const float3& tangent, const float3& bitangent,
 		const float3& wo_l, float alpha, const Material& mat,
 		RayHWSS& ray, HybridRNG& rng, FrameBufferHWSS& fb, cudaTextureObject_t cieTex)
@@ -162,6 +272,10 @@ namespace Vera::Spectral::HWSS {
 
 		if (Vera::Core::TraverseAnyHit(geom, P + normal * 1e-4f, wi, 1e-4f, dist - 2e-3f)) return;
 
+		float4 tr = make_float4(1.f, 1.f, 1.f, 1.f);
+		if (ray.m_MediumIdx != 0)
+			tr = EvalTransmittance(media[ray.m_MediumIdx - 1], P + normal * 1e-4f, wi, dist - 2e-3f, ray.m_Wavelengths, rng);
+
 		const Material& lmat = materials[ls.materialId];
 		float4 LeVec = make_float4(
 			EvalEmission(lmat, ray.m_Wavelengths.x), EvalEmission(lmat, ray.m_Wavelengths.y),
@@ -177,10 +291,10 @@ namespace Vera::Spectral::HWSS {
 		float f3 = EvalReflectance(mat, ray.m_Wavelengths.w);
 
 		float4 nee = ray.m_Throughput;
-		nee.x *= Dh * vis * MH::schlickFresnel(f0, cosTheta) * scale;
-		nee.y *= Dh * vis * MH::schlickFresnel(f1, cosTheta) * scale;
-		nee.z *= Dh * vis * MH::schlickFresnel(f2, cosTheta) * scale;
-		nee.w *= Dh * vis * MH::schlickFresnel(f3, cosTheta) * scale;
+		nee.x *= Dh * vis * MH::schlickFresnel(f0, cosTheta) * scale * tr.x;
+		nee.y *= Dh * vis * MH::schlickFresnel(f1, cosTheta) * scale * tr.y;
+		nee.z *= Dh * vis * MH::schlickFresnel(f2, cosTheta) * scale * tr.z;
+		nee.w *= Dh * vis * MH::schlickFresnel(f3, cosTheta) * scale * tr.w;
 
 		AccumulateContribution(fb, ray.pixelId, cieTex, ray.m_Wavelengths, nee, ray.m_Pdf, LeVec);
 	}
@@ -201,7 +315,7 @@ namespace Vera::Spectral::HWSS {
 	// that's a probability measure-change, not a radiance scaling, so it's unrelated to the
 	// value-side convention choice.
 	__device__ inline void SampleDirectLightingDielectricRough(
-		Core::GeometryBuffers& geom, const LightBVH& lightBvh, const Material* materials,
+		Core::GeometryBuffers& geom, const LightBVH& lightBvh, const Material* materials, const MediumHWSS* media,
 		const float3& P, const float3& normal, const float3& tangent, const float3& bitangent,
 		const float3& wo_l, float alpha, float etaI, float etaT,
 		RayHWSS& ray, HybridRNG& rng, FrameBufferHWSS& fb, cudaTextureObject_t cieTex)
@@ -273,6 +387,15 @@ namespace Vera::Spectral::HWSS {
 		if (value <= 0.f || bsdfPdf <= 0.f) return;
 		if (Vera::Core::TraverseAnyHit(geom, P + shadowNormal * 1e-4f, wi, 1e-4f, dist - 2e-3f)) return;
 
+		// Uses the CURRENT medium (ray.m_MediumIdx) for both lobes. Correct for the reflection
+		// lobe (shadow ray stays on the same side); a known approximation for the transmission
+		// lobe, where the shadow ray actually crosses into whichever medium is on the far side
+		// of the interface — not necessarily the same one. Left as a documented limitation
+		// rather than threading mat.mediumIdx-based medium-crossing logic through NEE here.
+		float4 tr = make_float4(1.f, 1.f, 1.f, 1.f);
+		if (ray.m_MediumIdx != 0)
+			tr = EvalTransmittance(media[ray.m_MediumIdx - 1], P + shadowNormal * 1e-4f, wi, dist - 2e-3f, ray.m_Wavelengths, rng);
+
 		const Material& lmat = materials[ls.materialId];
 		float4 LeVec = make_float4(
 			EvalEmission(lmat, ray.m_Wavelengths.x), EvalEmission(lmat, ray.m_Wavelengths.y),
@@ -282,7 +405,7 @@ namespace Vera::Spectral::HWSS {
 		float scale     = misWeight * fabsf(wi_l.z) * value / solidPdf;
 
 		float4 nee = ray.m_Throughput;
-		nee.x *= scale; nee.y *= scale; nee.z *= scale; nee.w *= scale;
+		nee.x *= scale * tr.x; nee.y *= scale * tr.y; nee.z *= scale * tr.z; nee.w *= scale * tr.w;
 
 		AccumulateContribution(fb, ray.pixelId, cieTex, ray.m_Wavelengths, nee, ray.m_Pdf, LeVec);
 	}
@@ -324,9 +447,49 @@ namespace Vera::Spectral::HWSS {
 		// ── Participating medium: free-flight sample before surface shading ──
 		if (ray.m_MediumIdx != 0) {
 			MediumHWSS med = media[ray.m_MediumIdx - 1];
+			float tMax = hit.m_Hit ? hit.t : 1e6f;
+
+			if (IsHeterogeneous(med)) {
+				if (med.majorantSigmaT > 0.f) {
+					float wl[4] = { ray.m_Wavelengths.x, ray.m_Wavelengths.y, ray.m_Wavelengths.z, ray.m_Wavelengths.w };
+					float4 thpt = ray.m_Throughput;
+					float  scatterT = tMax;
+					bool scattered = HeterogeneousFreeFlight(med, ray.m_Origin, ray.m_Direction, tMax, wl, thpt, rng, scatterT);
+
+					if (scattered) {
+						// Same continuation shape as the homogeneous scatter branch below --
+						// HeterogeneousFreeFlight has already folded the per-lane spectral-tracking
+						// weight into thpt, so no separate hero-ratio reweighting is needed here.
+						float3 scatterP = ray.m_Origin + scatterT * ray.m_Direction;
+						float3 wo = -ray.m_Direction;
+						float phasePdf;
+						float3 wi = Core::HGPhaseSample(med.g, wo, rng.nextFloat2(), phasePdf);
+
+						ray.m_BounceCount += 1;
+						if (!RussianRoulette(thpt, rng, ray.m_BounceCount)) {
+							ray.flags |= RAY_FLAG_DEAD;
+							ray.m_RngState = rng.pcg.m_State;
+							StoreRay(coreOut, extOut, idx, ray);
+							return;
+						}
+
+						ray.m_Origin      = scatterP;
+						ray.m_Direction   = wi;
+						ray.m_Throughput  = thpt;
+						ray.flags &= ~RAY_FLAG_DELTA;
+						ray.m_RngState = rng.pcg.m_State;
+						if (ray.m_BounceCount >= maxBounces) ray.flags |= RAY_FLAG_DEAD;
+						StoreRay(coreOut, extOut, idx, ray);
+						return;
+					} else {
+						// Ballistic pass-through: the accumulated null-collision weight is the
+						// unbiased heterogeneous transmittance ratio, already per-lane.
+						ray.m_Throughput = thpt;
+					}
+				}
+			} else {
 			float sigmaTHero = EvalSigmaT(med, ray.m_Wavelengths.x);
 			if (sigmaTHero > 0.f) {
-				float tMax = hit.m_Hit ? hit.t : 1e6f;
 				float u = rng.nextFloat();
 				float sampledDist = -logf(fmaxf(1.f - u, 1e-8f)) / sigmaTHero;
 
@@ -376,6 +539,7 @@ namespace Vera::Spectral::HWSS {
 						*thptArr[lane] *= trLane / fmaxf(pNoScatter, 1e-12f);
 					}
 				}
+			}
 			}
 		}
 
@@ -455,7 +619,7 @@ namespace Vera::Spectral::HWSS {
 			lambertianReflectance = make_float4(
 				EvalReflectance(mat, ray.m_Wavelengths.x), EvalReflectance(mat, ray.m_Wavelengths.y),
 				EvalReflectance(mat, ray.m_Wavelengths.z), EvalReflectance(mat, ray.m_Wavelengths.w));
-			SampleDirectLighting(geom, lightBvh, materials, P, normal, lambertianReflectance, ray, rng, fb, cieTex);
+			SampleDirectLighting(geom, lightBvh, materials, media, P, normal, lambertianReflectance, ray, rng, fb, cieTex);
 		}
 
 		float3 ggxTangent, ggxBitangent, ggxWo_l;
@@ -464,7 +628,7 @@ namespace Vera::Spectral::HWSS {
 			MH::buildONB(normal, ggxTangent, ggxBitangent);
 			ggxWo_l = make_float3(dot(wo, ggxTangent), dot(wo, ggxBitangent), dot(wo, normal));
 			ggxAlpha = fmaxf(mat.roughness * mat.roughness, 1e-4f);
-			SampleDirectLightingGGX(geom, lightBvh, materials, P, normal, ggxTangent, ggxBitangent,
+			SampleDirectLightingGGX(geom, lightBvh, materials, media, P, normal, ggxTangent, ggxBitangent,
 				ggxWo_l, ggxAlpha, mat, ray, rng, fb, cieTex);
 		}
 
@@ -569,7 +733,7 @@ namespace Vera::Spectral::HWSS {
 				float3 dWo_l = make_float3(dot(wo, dTangent), dot(wo, dBitangent), dot(wo, normal));
 				float  dAlpha = fmaxf(mat.roughness * mat.roughness, 1e-4f);
 
-				SampleDirectLightingDielectricRough(geom, lightBvh, materials, P, normal, dTangent, dBitangent,
+				SampleDirectLightingDielectricRough(geom, lightBvh, materials, media, P, normal, dTangent, dBitangent,
 					dWo_l, dAlpha, etaI, etaT, ray, rng, fb, cieTex);
 
 				float3 h_l = MH::sampleGGXVNDF(dWo_l, dAlpha, rng.nextFloat2());
