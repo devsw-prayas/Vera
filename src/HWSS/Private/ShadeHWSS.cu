@@ -184,6 +184,108 @@ namespace Vera::Spectral::HWSS {
 		AccumulateContribution(fb, ray.pixelId, cieTex, ray.m_Wavelengths, nee, ray.m_Pdf, LeVec);
 	}
 
+	// NEE against LightBVH area lights, ROUGH dielectric surfaces only (mat.roughness > 0;
+	// perfectly smooth dielectric stays delta/BSDF-sampling-only, same as before this
+	// feature — NEE is meaningless for a delta BSDF). Evaluates whichever microfacet lobe
+	// (reflection or transmission) is geometrically consistent with the light-sampled
+	// direction wi, MIS-weighted against the matching VNDF-sampling pdf.
+	//
+	// Both lobes use Walter et al. 2007's microfacet transmission model. The BTDF value
+	// below omits the eta^2 radiance-compression factor a strictly physical derivation
+	// would include — this matches the existing BSDF-sampled smooth/rough transmission
+	// path (see the throughput derivation comment below), which never applied it either;
+	// keeping NEE consistent with that same convention means both MIS strategies estimate
+	// the same integrand. The VNDF-sampling PDF Jacobian (which converts the sampled
+	// microfacet-normal density into a direction density) does still need the eta^2 term —
+	// that's a probability measure-change, not a radiance scaling, so it's unrelated to the
+	// value-side convention choice.
+	__device__ inline void SampleDirectLightingDielectricRough(
+		Core::GeometryBuffers& geom, const LightBVH& lightBvh, const Material* materials,
+		const float3& P, const float3& normal, const float3& tangent, const float3& bitangent,
+		const float3& wo_l, float alpha, float etaI, float etaT,
+		RayHWSS& ray, Core::PCG32& rng, FrameBufferHWSS& fb, cudaTextureObject_t cieTex)
+	{
+		if (lightBvh.lightCount == 0 || wo_l.z <= 0.f) return;
+
+		LightSample ls = SampleLightBVH(lightBvh, geom, P, rng.nextFloat(), rng.nextFloat(), rng.nextFloat2());
+		if (ls.pdf <= 0.f) return;
+
+		float3 toLight = ls.position - P;
+		float  dist2   = fmaxf(dot(toLight, toLight), 1e-8f);
+		float  dist    = sqrtf(dist2);
+		float3 wi      = toLight / dist;
+
+		// Unlike Lambertian/GGX's NEE (which only ever sample a reflection direction and
+		// so only need |dot(lightNormal, -wi)|), a transmitted wi can approach the light
+		// from either face of its emissive geometry, so this uses |dot| unsigned rather
+		// than culling the back face.
+		float solidPdf = ls.pdf * dist2 / fmaxf(fabsf(dot(ls.normal, wi)), 1e-6f);
+		if (solidPdf <= 0.f) return;
+
+		float3 wi_l = make_float3(dot(wi, tangent), dot(wi, bitangent), dot(wi, normal));
+		if (fabsf(wi_l.z) < 1e-6f) return;
+
+		float a2   = alpha * alpha;
+		float G1wo = 2.f * wo_l.z / (wo_l.z + sqrtf(a2 + (1.f - a2) * wo_l.z * wo_l.z));
+
+		float value = 0.f;   // achromatic BSDF value (dielectric has no per-wavelength albedo)
+		float bsdfPdf = 0.f;
+		float3 shadowNormal = normal;
+
+		if (wi_l.z > 0.f) {
+			// Reflection lobe: same construction as GGX's NEE above.
+			float3 h_l = normalize(wo_l + wi_l);
+			float  cosThetaH = fmaxf(dot(wo_l, h_l), 0.f);
+			float  F  = MH::fresnelDielectric(cosThetaH, etaI, etaT);
+			float  Dh = MH::evalGGX(h_l, alpha);
+			float  vis = MH::ggxG2(wi_l, wo_l, alpha);
+			value   = Dh * vis * F;
+			bsdfPdf = F * G1wo * Dh / fmaxf(4.f * wo_l.z, 1e-7f);
+		} else {
+			// Transmission lobe: reconstruct the generalized half-vector from wi_l/wo_l
+			// (Walter et al. eq 16), oriented onto wo's side to match D(h)'s convention.
+			float3 ht = normalize(-(etaT * wi_l + etaI * wo_l));
+			if (ht.z < 0.f) ht = -ht;
+			float cosThetaH = dot(wo_l, ht);
+			if (cosThetaH <= 0.f) return;
+
+			float F  = MH::fresnelDielectric(cosThetaH, etaI, etaT);
+			float Dh = MH::evalGGX(ht, alpha);
+			float vis = MH::ggxG2(make_float3(wi_l.x, wi_l.y, fabsf(wi_l.z)), wo_l, alpha);
+			float G2  = vis * 4.f * wo_l.z * fabsf(wi_l.z);
+
+			float denomJ = etaI * dot(wo_l, ht) + etaT * dot(wi_l, ht);
+			if (fabsf(denomJ) < 1e-7f) return;
+
+			float wiDotH = dot(wi_l, ht);
+			value = (1.f - F) * Dh * G2 * fabsf(wiDotH * cosThetaH)
+				/ fmaxf(wo_l.z * fabsf(wi_l.z), 1e-7f) / (denomJ * denomJ);
+
+			float dwh_dwi = etaT * etaT * fabsf(wiDotH) / (denomJ * denomJ);
+			bsdfPdf = (1.f - F) * (G1wo * Dh * fmaxf(cosThetaH, 0.f) / wo_l.z) * dwh_dwi;
+
+			// wi crosses to the far side of the surface — offset the shadow ray origin the
+			// other way, or it starts on the wrong side of the geometry it just left.
+			shadowNormal = -normal;
+		}
+
+		if (value <= 0.f || bsdfPdf <= 0.f) return;
+		if (Vera::Core::TraverseAnyHit(geom, P + shadowNormal * 1e-4f, wi, 1e-4f, dist - 2e-3f)) return;
+
+		const Material& lmat = materials[ls.materialId];
+		float4 LeVec = make_float4(
+			EvalEmission(lmat, ray.m_Wavelengths.x), EvalEmission(lmat, ray.m_Wavelengths.y),
+			EvalEmission(lmat, ray.m_Wavelengths.z), EvalEmission(lmat, ray.m_Wavelengths.w));
+
+		float misWeight = PowerHeuristic(solidPdf, bsdfPdf);
+		float scale     = misWeight * fabsf(wi_l.z) * value / solidPdf;
+
+		float4 nee = ray.m_Throughput;
+		nee.x *= scale; nee.y *= scale; nee.z *= scale; nee.w *= scale;
+
+		AccumulateContribution(fb, ray.pixelId, cieTex, ray.m_Wavelengths, nee, ray.m_Pdf, LeVec);
+	}
+
 	__global__ void ShadeKernelHWSSWavefront(
 		Core::GeometryBuffers geom,
 		RayCoreSoA coreIn,
@@ -408,33 +510,101 @@ namespace Vera::Spectral::HWSS {
 			bool entering = dot(ray.m_Direction, geoNormal) < 0.f;
 			float etaI = entering ? ray.m_IorCurr : etaHero;
 			float etaT = entering ? etaHero : 1.f;
-			float F = MH::fresnelDielectric(dot(wo, normal), etaI, etaT);
 
-			if (rng.nextFloat() < F) {
-				wi = Reflect(wo, normal);
-				pdfDirectional = F;
-				// mirror reflection is achromatic (Snell's law only bends refraction)
+			if (mat.roughness <= 0.f) {
+				// Perfectly smooth: mirror reflect / Snell refract, delta BSDF (no NEE — see
+				// SampleDirectLightingDielectricRough's comment for why NEE needs roughness > 0).
+				float F = MH::fresnelDielectric(dot(wo, normal), etaI, etaT);
+
+				if (rng.nextFloat() < F) {
+					wi = Reflect(wo, normal);
+					pdfDirectional = F;
+					// mirror reflection is achromatic (Snell's law only bends refraction)
+				} else {
+					// normal is already oriented onto wo's side by the earlier flip (for
+					// both entering and exiting), which is exactly what refract() needs —
+					// re-flipping here for the exit case put n on the wrong side and broke
+					// cosThetaI's sign inside refract().
+					float3 n = normal;
+					float eta = etaI / etaT;
+					float3 wt;
+					if (!MH::refract(-wo, n, eta, wt)) { valid = false; }
+					else {
+						wi = wt;
+						pdfDirectional = 1.f - F;
+						ray.m_IorCurr = etaT;
+						// entering the dielectric's interior medium (0 = vacuum/exit)
+						ray.m_MediumIdx = entering ? mat.mediumIdx : 0;
+						if (mat.cauchyB != 0.f) {
+							// Dispersive: offset lanes would refract at different angles than
+							// the hero direction we traced — collapse to hero-only (Wilkie et al.).
+							ray.flags |= RAY_FLAG_DISPERSED;
+							ray.m_Pdf.y = ray.m_Pdf.z = ray.m_Pdf.w = 0.f;
+							thpt.y = thpt.z = thpt.w = 0.f;
+						}
+					}
+				}
 			} else {
-				// normal is already oriented onto wo's side by the earlier flip (for
-				// both entering and exiting), which is exactly what refract() needs —
-				// re-flipping here for the exit case put n on the wrong side and broke
-				// cosThetaI's sign inside refract().
-				float3 n = normal;
-				float eta = etaI / etaT;
-				float3 wt;
-				if (!MH::refract(-wo, n, eta, wt)) { valid = false; }
-				else {
-					wi = wt;
-					pdfDirectional = 1.f - F;
-					ray.m_IorCurr = etaT;
-					// entering the dielectric's interior medium (0 = vacuum/exit)
-					ray.m_MediumIdx = entering ? mat.mediumIdx : 0;
-					if (mat.cauchyB != 0.f) {
-						// Dispersive: offset lanes would refract at different angles than
-						// the hero direction we traced — collapse to hero-only (Wilkie et al.).
-						ray.flags |= RAY_FLAG_DISPERSED;
-						ray.m_Pdf.y = ray.m_Pdf.z = ray.m_Pdf.w = 0.f;
-						thpt.y = thpt.z = thpt.w = 0.f;
+				// Rough (Walter et al. 2007 microfacet transmission, VNDF-sampled — see
+				// SampleDirectLightingDielectricRough above for the full derivation). Reflect
+				// and refract are both stochastically chosen by Fresnel at the SAMPLED
+				// microfacet normal h_l (not the macro normal), same two-lobe structure as the
+				// smooth case above but generalized to a rough h_l instead of the fixed normal.
+				//
+				// With VNDF importance sampling + Fresnel-weighted stochastic lobe selection,
+				// both lobes' throughput reduces to the IDENTICAL ratio G2(wi,wo)/G1(wo) that
+				// GGX's reflect branch already uses (Fresnel cancels exactly against the
+				// selection probability, and — for transmission — the eta^2 Jacobian terms
+				// cancel exactly against the BTDF's own eta^2/denominator terms). This is a
+				// standard, well-known identity, not a coincidence of this specific derivation.
+				float3 dTangent, dBitangent;
+				MH::buildONB(normal, dTangent, dBitangent);
+				float3 dWo_l = make_float3(dot(wo, dTangent), dot(wo, dBitangent), dot(wo, normal));
+				float  dAlpha = fmaxf(mat.roughness * mat.roughness, 1e-4f);
+
+				SampleDirectLightingDielectricRough(geom, lightBvh, materials, P, normal, dTangent, dBitangent,
+					dWo_l, dAlpha, etaI, etaT, ray, rng, fb, cieTex);
+
+				float3 h_l = MH::sampleGGXVNDF(dWo_l, dAlpha, rng.nextFloat2());
+				float  F   = MH::fresnelDielectric(dot(dWo_l, h_l), etaI, etaT);
+				float  a2  = dAlpha * dAlpha;
+				float  G1wo = 2.f * dWo_l.z / (dWo_l.z + sqrtf(a2 + (1.f - a2) * dWo_l.z * dWo_l.z));
+				float  Dh   = MH::evalGGX(h_l, dAlpha);
+
+				if (rng.nextFloat() < F) {
+					float3 wi_l = 2.f * dot(dWo_l, h_l) * h_l - dWo_l;
+					if (wi_l.z <= 0.f) { valid = false; }
+					else {
+						wi = MH::toWorld(wi_l, normal, dTangent, dBitangent);
+						float vis   = MH::ggxG2(wi_l, dWo_l, dAlpha);
+						float ratio = (vis * 4.f * dWo_l.z * wi_l.z) / fmaxf(G1wo, 1e-7f);
+						thpt.x *= ratio; thpt.y *= ratio; thpt.z *= ratio; thpt.w *= ratio;
+						pdfDirectional = 1.f; // sentinel — real pdf is bsdfMisPdf below
+						bsdfMisPdf = F * G1wo * Dh / fmaxf(4.f * dWo_l.z, 1e-7f);
+					}
+				} else {
+					float eta = etaI / etaT;
+					float3 wt_l;
+					if (!MH::refract(-dWo_l, h_l, eta, wt_l)) { valid = false; }
+					else if (wt_l.z >= 0.f) { valid = false; }
+					else {
+						wi = MH::toWorld(wt_l, normal, dTangent, dBitangent);
+						float vis   = MH::ggxG2(make_float3(wt_l.x, wt_l.y, fabsf(wt_l.z)), dWo_l, dAlpha);
+						float ratio = (vis * 4.f * dWo_l.z * fabsf(wt_l.z)) / fmaxf(G1wo, 1e-7f);
+						thpt.x *= ratio; thpt.y *= ratio; thpt.z *= ratio; thpt.w *= ratio;
+						pdfDirectional = 1.f;
+
+						ray.m_IorCurr = etaT;
+						ray.m_MediumIdx = entering ? mat.mediumIdx : 0;
+						if (mat.cauchyB != 0.f) {
+							ray.flags |= RAY_FLAG_DISPERSED;
+							ray.m_Pdf.y = ray.m_Pdf.z = ray.m_Pdf.w = 0.f;
+							thpt.y = thpt.z = thpt.w = 0.f;
+						}
+
+						float denomJ = etaI * dot(dWo_l, h_l) + etaT * dot(wt_l, h_l);
+						float dwh_dwi = etaT * etaT * fabsf(dot(wt_l, h_l)) / fmaxf(denomJ * denomJ, 1e-9f);
+						bsdfMisPdf = (1.f - F) * (G1wo * Dh * fmaxf(dot(dWo_l, h_l), 0.f) / dWo_l.z) * dwh_dwi;
 					}
 				}
 			}
@@ -459,8 +629,8 @@ namespace Vera::Spectral::HWSS {
 		ray.m_Throughput  = thpt;
 		ray.m_BsdfPdf     = bsdfMisPdf; // only meaningful when RAY_FLAG_DELTA is unset (Lambertian, GGX)
 		ray.flags &= ~RAY_FLAG_DELTA;
-		if (mat.type == MaterialType::Dielectric)
-			ray.flags |= RAY_FLAG_DELTA; // no NEE/eval written for Dielectric yet — treat as delta
+		if (mat.type == MaterialType::Dielectric && mat.roughness <= 0.f)
+			ray.flags |= RAY_FLAG_DELTA; // perfectly smooth — still a true delta BSDF, no NEE for it
 		ray.m_RngState = rng.m_State;
 
 		if (ray.m_BounceCount >= maxBounces) ray.flags |= RAY_FLAG_DEAD;
