@@ -29,5 +29,10 @@ namespace Vera::Spectral::HWSS {
 		uint32_t maxBounces,
 		unsigned char defaultMediumIdx = 0,
 		Core::ToneMapper tonemapper = Core::ToneMapper::AgX,
-		float exposure = 1.f);
+		float exposure = 1.f,
+		// Hardware-accelerated (OptiX) closest-hit traversal instead of the software
+		// TraversalKernelWavefront -- only has an effect when built with VERA_ENABLE_OPTIX;
+		// silently ignored (falls back to the software path) otherwise. Everything else about
+		// the pipeline (shading, NEE shadow rays, compaction, material sort) is unchanged.
+		bool useOptix = false);
 }

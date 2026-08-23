@@ -18,6 +18,7 @@ desktop.ini
 *.obj
 *.dll.recipe
 *.ilk
+*.ptx
 *.recipe
 
 # Build and intermediate files

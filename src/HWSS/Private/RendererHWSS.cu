@@ -6,6 +6,9 @@
 #include <Traversal.cuh>
 #include "RayCompactionHWSS.cuh"
 #include "MaterialSortHWSS.cuh"
+#ifdef VERA_ENABLE_OPTIX
+#include <OptixTraversal.h>
+#endif
 
 namespace Vera::Spectral::HWSS {
 	void RenderHWSS(
@@ -21,7 +24,8 @@ namespace Vera::Spectral::HWSS {
 		uint32_t maxBounces,
 		unsigned char defaultMediumIdx,
 		Core::ToneMapper tonemapper,
-		float exposure)
+		float exposure,
+		bool useOptix)
 	{
 		uint32_t rayCount = camera.m_Width * camera.m_Height;
 
@@ -69,13 +73,23 @@ namespace Vera::Spectral::HWSS {
 
 		CIETexture cieTex = MakeCIETexture(LAMBDA_MIN, LAMBDA_MAX);
 
+#ifdef VERA_ENABLE_OPTIX
+		Core::OptixTraversalContext optixCtx{};
+		if (useOptix) optixCtx = Core::InitOptixTraversal(geom);
+#endif
+
 		for (uint32_t sampleIdx = 0; sampleIdx < samplesPerPixel; ++sampleIdx) {
 			GeneratePrimaryRaysHWSSKernel<<<grid2D, block2D>>>(camera, coreA, extA, sampleIdx, defaultMediumIdx);
 
 			uint32_t activeCount = rayCount;
 			for (uint32_t bounce = 0; bounce < maxBounces && activeCount > 0; ++bounce) {
 				dim3 grid1D((activeCount + block1D.x - 1) / block1D.x);
-				Core::TraversalKernelWavefront<<<grid1D, block1D>>>(geom, coreA, d_hits, activeCount);
+#ifdef VERA_ENABLE_OPTIX
+				if (useOptix)
+					Core::LaunchOptixTraversal(optixCtx, coreA, d_hits, activeCount, /*stream*/0);
+				else
+#endif
+					Core::TraversalKernelWavefront<<<grid1D, block1D>>>(geom, coreA, d_hits, activeCount);
 				uint32_t* order = sorter.Sort(geom, d_hits, activeCount, /*stream*/0);
 				ShadeKernelHWSSWavefront<<<grid1D, block1D>>>(
 					geom, coreA, extA, d_hits, order, d_materials, d_media, lightBvh,
@@ -83,6 +97,10 @@ namespace Vera::Spectral::HWSS {
 				activeCount = compactor.Compact(coreB, extB, activeCount, coreA, extA, /*stream*/0);
 			}
 		}
+
+#ifdef VERA_ENABLE_OPTIX
+		if (useOptix) Core::DestroyOptixTraversal(optixCtx);
+#endif
 
 		FreeCIETexture(cieTex);
 		sorter.Destroy();
