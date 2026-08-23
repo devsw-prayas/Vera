@@ -28,7 +28,7 @@ namespace Vera::Core {
 	// to TraverseClosestHit.  HWSS-specific because it knows about RayHWSS.
 	__global__ void TraversalKernelWavefront(
 		GeometryBuffers geom,
-		const Spectral::HWSS::RayHWSS* __restrict__ rays,
+		Spectral::HWSS::RayCoreSoA rayCore,
 		WavefrontHitRecord* __restrict__ hits,
 		uint32_t rayCount);
 }

@@ -36,13 +36,15 @@ namespace Vera::Spectral::HWSS {
 	// uses at surfaces), matching Wilkie et al.'s treatment of spectral media.
 	__global__ void ShadeKernelHWSSWavefront(
 		Core::GeometryBuffers geom,
-		const RayHWSS* __restrict__ raysIn,
+		RayCoreSoA coreIn,
+		RayExtSoA extIn,
 		const Core::WavefrontHitRecord* __restrict__ hits,
 		const uint32_t* __restrict__ order,
 		const Material* __restrict__ materials,
 		const MediumHWSS* __restrict__ media,
 		LightBVH lightBvh,
-		RayHWSS* __restrict__ raysOut,
+		RayCoreSoA coreOut,
+		RayExtSoA extOut,
 		uint32_t rayCount,
 		FrameBufferHWSS fb,
 		EnvMapHWSS envMap,

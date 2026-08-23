@@ -6,7 +6,7 @@
 
 namespace Vera::Spectral::HWSS {
 	__global__ void GeneratePrimaryRaysHWSSKernel(
-		Core::Camera camera, RayHWSS* rays,
+		Core::Camera camera, RayCoreSoA core, RayExtSoA ext,
 		unsigned int sampleIdx, unsigned char defaultMediumIdx)
 	{
 		unsigned int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -67,7 +67,6 @@ namespace Vera::Spectral::HWSS {
 		ray.m_Pdf          = make_float4(lanePdf, lanePdf, lanePdf, lanePdf);
 		ray.m_RngState     = rng.m_State;
 		ray.pixelId        = pixelId;
-		ray.m_MaterialId   = 0;
 		ray.m_BounceCount  = 0;
 		ray.m_BsdfPdf      = 1.f; // irrelevant while RAY_FLAG_DELTA is set below
 		// Mark as delta so first emissive hit uses w=1 (camera has no competing NEE strategy)
@@ -75,6 +74,6 @@ namespace Vera::Spectral::HWSS {
 		ray.m_IorCurr      = 1.f;
 		ray.m_MediumIdx    = defaultMediumIdx;
 
-		rays[pixelId] = ray;
+		StoreRay(core, ext, pixelId, ray);
 	}
 }

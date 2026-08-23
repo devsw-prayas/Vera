@@ -186,13 +186,15 @@ namespace Vera::Spectral::HWSS {
 
 	__global__ void ShadeKernelHWSSWavefront(
 		Core::GeometryBuffers geom,
-		const RayHWSS* __restrict__ raysIn,
+		RayCoreSoA coreIn,
+		RayExtSoA extIn,
 		const Core::WavefrontHitRecord* __restrict__ hits,
 		const uint32_t* __restrict__ order,
 		const Material* __restrict__ materials,
 		const MediumHWSS* __restrict__ media,
 		LightBVH lightBvh,
-		RayHWSS* __restrict__ raysOut,
+		RayCoreSoA coreOut,
+		RayExtSoA extOut,
 		uint32_t rayCount,
 		FrameBufferHWSS fb,
 		EnvMapHWSS envMap,
@@ -203,7 +205,7 @@ namespace Vera::Spectral::HWSS {
 		if (idx >= rayCount) return;
 
 		unsigned int srcIdx = order[idx];
-		RayHWSS ray = raysIn[srcIdx];
+		RayHWSS ray = LoadRay(coreIn, extIn, srcIdx);
 
 		Core::WavefrontHitRecord hit = hits[srcIdx];
 
@@ -242,7 +244,7 @@ namespace Vera::Spectral::HWSS {
 					if (!RussianRoulette(thpt, rng, ray.m_BounceCount)) {
 						ray.flags |= RAY_FLAG_DEAD;
 						ray.m_RngState = rng.m_State;
-						raysOut[idx] = ray;
+						StoreRay(coreOut, extOut, idx, ray);
 						return;
 					}
 
@@ -252,7 +254,7 @@ namespace Vera::Spectral::HWSS {
 					ray.flags &= ~RAY_FLAG_DELTA;
 					ray.m_RngState = rng.m_State;
 					if (ray.m_BounceCount >= maxBounces) ray.flags |= RAY_FLAG_DEAD;
-					raysOut[idx] = ray;
+					StoreRay(coreOut, extOut, idx, ray);
 					return;
 				} else {
 					// No scatter: attenuate to the surface (or to infinity on miss) by the
@@ -274,7 +276,7 @@ namespace Vera::Spectral::HWSS {
 				EvalEnvMap(envMap, ray.m_Wavelengths.z), EvalEnvMap(envMap, ray.m_Wavelengths.w));
 			AccumulateContribution(fb, ray.pixelId, cieTex, ray.m_Wavelengths, ray.m_Throughput, ray.m_Pdf, LeVec);
 			ray.flags |= RAY_FLAG_DEAD;
-			raysOut[idx] = ray;
+			StoreRay(coreOut, extOut, idx, ray);
 			return;
 		}
 
@@ -335,7 +337,7 @@ namespace Vera::Spectral::HWSS {
 				AccumulateContribution(fb, ray.pixelId, cieTex, ray.m_Wavelengths, thptWeighted, ray.m_Pdf, LeVec);
 			}
 			ray.flags |= RAY_FLAG_DEAD;
-			raysOut[idx] = ray;
+			StoreRay(coreOut, extOut, idx, ray);
 			return;
 		}
 
@@ -440,7 +442,7 @@ namespace Vera::Spectral::HWSS {
 
 		if (!valid || pdfDirectional <= 0.f) {
 			ray.flags |= RAY_FLAG_DEAD;
-			raysOut[idx] = ray;
+			StoreRay(coreOut, extOut, idx, ray);
 			return;
 		}
 
@@ -448,7 +450,7 @@ namespace Vera::Spectral::HWSS {
 		if (!RussianRoulette(thpt, rng, ray.m_BounceCount)) {
 			ray.flags |= RAY_FLAG_DEAD;
 			ray.m_RngState = rng.m_State;
-			raysOut[idx] = ray;
+			StoreRay(coreOut, extOut, idx, ray);
 			return;
 		}
 
@@ -463,6 +465,6 @@ namespace Vera::Spectral::HWSS {
 
 		if (ray.m_BounceCount >= maxBounces) ray.flags |= RAY_FLAG_DEAD;
 
-		raysOut[idx] = ray;
+		StoreRay(coreOut, extOut, idx, ray);
 	}
 }

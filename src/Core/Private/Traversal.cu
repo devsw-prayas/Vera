@@ -138,22 +138,22 @@ __device__ bool TraverseAnyHit(
 
 __global__ void TraversalKernelWavefront(
 	GeometryBuffers geom,
-	const Spectral::HWSS::RayHWSS* __restrict__ rays,
+	Spectral::HWSS::RayCoreSoA rayCore,
 	WavefrontHitRecord* __restrict__ hits,
 	uint32_t rayCount)
 {
 	unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
 	if (idx >= rayCount) return;
 
-	Spectral::HWSS::RayHWSS ray = rays[idx];
+	unsigned char flags = rayCore.flags[idx];
 
 	WavefrontHitRecord h{};
 	h.m_Hit = false;
 	h.t     = FLT_MAX;
 
-	if (ray.flags & Spectral::HWSS::RAY_FLAG_DEAD) { hits[idx] = h; return; }
+	if (flags & Spectral::HWSS::RAY_FLAG_DEAD) { hits[idx] = h; return; }
 
-	hits[idx] = TraverseClosestHit(geom, ray.m_Origin, ray.m_Direction, 1e-4f, FLT_MAX);
+	hits[idx] = TraverseClosestHit(geom, rayCore.origin[idx], rayCore.direction[idx], 1e-4f, FLT_MAX);
 }
 
 } // namespace Vera::Core

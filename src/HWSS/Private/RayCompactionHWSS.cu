@@ -1,27 +1,46 @@
 #include "RayCompactionHWSS.cuh"
 #include <cub/device/device_select.cuh>
+#include <thrust/iterator/counting_iterator.h>
+#include <thrust/iterator/transform_iterator.h>
 
 namespace Vera::Spectral::HWSS {
-	struct AliveOp {
-		__device__ bool operator()(const RayHWSS& r) const {
-			return !(r.flags & RAY_FLAG_DEAD);
+	struct AliveFromFlags {
+		__device__ __forceinline__ bool operator()(unsigned char flags) const {
+			return !(flags & RAY_FLAG_DEAD);
 		}
 	};
+
+	using FlagIt = thrust::transform_iterator<AliveFromFlags, unsigned char*>;
+
+	// Copies each surviving ray (by its pre-compaction index in `order`) from the
+	// (coreIn, extIn) SoA buffers into the dense [0, count) range of (coreOut, extOut).
+	__global__ void GatherRaysKernel(
+		RayCoreSoA coreIn, RayExtSoA extIn,
+		const uint32_t* __restrict__ order, uint32_t count,
+		RayCoreSoA coreOut, RayExtSoA extOut)
+	{
+		unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
+		if (idx >= count) return;
+		StoreRay(coreOut, extOut, idx, LoadRay(coreIn, extIn, order[idx]));
+	}
 
 	void RayCompactor::Init(uint32_t inMaxRayCount) {
 		maxRayCount = inMaxRayCount;
 		cudaMalloc(&d_numSelected, sizeof(uint32_t));
+		cudaMalloc(&d_order, maxRayCount * sizeof(uint32_t));
 
 		// Sizing pass for temporary storage
 		tempStorageBytes = 0;
-		cub::DeviceSelect::If(
+		thrust::counting_iterator<uint32_t> countIt(0);
+		FlagIt flagIt(nullptr, AliveFromFlags{});
+		cub::DeviceSelect::Flagged(
 			nullptr,
 			tempStorageBytes,
-			static_cast<RayHWSS*>(nullptr),
-			static_cast<RayHWSS*>(nullptr),
+			countIt,
+			flagIt,
+			d_order,
 			d_numSelected,
-			maxRayCount,
-			AliveOp{}
+			maxRayCount
 		);
 
 		if (tempStorageBytes > 0) {
@@ -38,29 +57,46 @@ namespace Vera::Spectral::HWSS {
 			cudaFree(d_numSelected);
 			d_numSelected = nullptr;
 		}
+		if (d_order) {
+			cudaFree(d_order);
+			d_order = nullptr;
+		}
 		tempStorageBytes = 0;
 		maxRayCount = 0;
 	}
 
-	uint32_t RayCompactor::Compact(RayHWSS* d_in, RayHWSS* d_out, uint32_t count, cudaStream_t stream) {
+	uint32_t RayCompactor::Compact(
+		RayCoreSoA coreIn, RayExtSoA extIn, uint32_t count,
+		RayCoreSoA coreOut, RayExtSoA extOut, cudaStream_t stream)
+	{
 		if (count == 0) {
 			return 0;
 		}
 
-		cub::DeviceSelect::If(
+		thrust::counting_iterator<uint32_t> countIt(0);
+		FlagIt flagIt(coreIn.flags, AliveFromFlags{});
+
+		cub::DeviceSelect::Flagged(
 			d_tempStorage,
 			tempStorageBytes,
-			d_in,
-			d_out,
+			countIt,
+			flagIt,
+			d_order,
 			d_numSelected,
 			count,
-			AliveOp{},
 			stream
 		);
 
 		uint32_t hostCount = 0;
 		cudaMemcpyAsync(&hostCount, d_numSelected, sizeof(uint32_t), cudaMemcpyDeviceToHost, stream);
 		cudaStreamSynchronize(stream);
+
+		if (hostCount > 0) {
+			dim3 block(256);
+			dim3 grid((hostCount + block.x - 1) / block.x);
+			GatherRaysKernel<<<grid, block, 0, stream>>>(coreIn, extIn, d_order, hostCount, coreOut, extOut);
+		}
+
 		return hostCount;
 	}
 }
