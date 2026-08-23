@@ -3,6 +3,7 @@
 #include "LightBVHSamplerHWSS.cuh"
 #include "CIE.h"
 #include "PCG32.cuh"
+#include "QMCHWSS.h"
 #include <PhaseFunction.cuh>
 #include <Traversal.cuh>
 #include <Triangle.h>
@@ -60,7 +61,7 @@ namespace Vera::Spectral::HWSS {
 	// helps), then survival probability tracks the throughput itself (higher
 	// remaining energy => more likely to keep tracing) and surviving lanes are
 	// rescaled by 1/q so the estimator stays unbiased in expectation.
-	__device__ inline bool RussianRoulette(float4& thpt, Core::PCG32& rng, uint32_t bounceCount, uint32_t minBounces = 4) {
+	__device__ inline bool RussianRoulette(float4& thpt, HybridRNG& rng, uint32_t bounceCount, uint32_t minBounces = 4) {
 		if (bounceCount < minBounces) return true;
 		float maxComp = fmaxf(fmaxf(thpt.x, thpt.y), fmaxf(thpt.z, thpt.w));
 		float q = fminf(fmaxf(maxComp, 0.05f), 0.95f);
@@ -78,7 +79,7 @@ namespace Vera::Spectral::HWSS {
 	__device__ inline void SampleDirectLighting(
 		Core::GeometryBuffers& geom, const LightBVH& lightBvh, const Material* materials,
 		const float3& P, const float3& normal, const float4& reflectance,
-		RayHWSS& ray, Core::PCG32& rng, FrameBufferHWSS& fb, cudaTextureObject_t cieTex)
+		RayHWSS& ray, HybridRNG& rng, FrameBufferHWSS& fb, cudaTextureObject_t cieTex)
 	{
 		if (lightBvh.lightCount == 0) return;
 
@@ -130,7 +131,7 @@ namespace Vera::Spectral::HWSS {
 		Core::GeometryBuffers& geom, const LightBVH& lightBvh, const Material* materials,
 		const float3& P, const float3& normal, const float3& tangent, const float3& bitangent,
 		const float3& wo_l, float alpha, const Material& mat,
-		RayHWSS& ray, Core::PCG32& rng, FrameBufferHWSS& fb, cudaTextureObject_t cieTex)
+		RayHWSS& ray, HybridRNG& rng, FrameBufferHWSS& fb, cudaTextureObject_t cieTex)
 	{
 		if (lightBvh.lightCount == 0 || wo_l.z <= 0.f) return;
 
@@ -203,7 +204,7 @@ namespace Vera::Spectral::HWSS {
 		Core::GeometryBuffers& geom, const LightBVH& lightBvh, const Material* materials,
 		const float3& P, const float3& normal, const float3& tangent, const float3& bitangent,
 		const float3& wo_l, float alpha, float etaI, float etaT,
-		RayHWSS& ray, Core::PCG32& rng, FrameBufferHWSS& fb, cudaTextureObject_t cieTex)
+		RayHWSS& ray, HybridRNG& rng, FrameBufferHWSS& fb, cudaTextureObject_t cieTex)
 	{
 		if (lightBvh.lightCount == 0 || wo_l.z <= 0.f) return;
 
@@ -311,8 +312,14 @@ namespace Vera::Spectral::HWSS {
 
 		Core::WavefrontHitRecord hit = hits[srcIdx];
 
-		Core::PCG32 rng;
-		rng.m_State = ray.m_RngState;
+		HybridRNG rng{};
+		rng.pcg.m_State = ray.m_RngState;
+		rng.sampleIdx = ray.m_SampleIdx;
+		rng.pixelId   = ray.pixelId;
+		// ray.m_BounceCount here is the count BEFORE this shading call's increment(s) below
+		// (i.e. how many bounces have already happened) — used once to pick this call's QMC
+		// dimension range, consistent regardless of which material branch ends up running.
+		rng.dimBase   = (uint32_t)kQmcCameraDims + (uint32_t)ray.m_BounceCount * (uint32_t)kQmcDimsPerBounce;
 
 		// ── Participating medium: free-flight sample before surface shading ──
 		if (ray.m_MediumIdx != 0) {
@@ -345,7 +352,7 @@ namespace Vera::Spectral::HWSS {
 					ray.m_BounceCount += 1;
 					if (!RussianRoulette(thpt, rng, ray.m_BounceCount)) {
 						ray.flags |= RAY_FLAG_DEAD;
-						ray.m_RngState = rng.m_State;
+						ray.m_RngState = rng.pcg.m_State;
 						StoreRay(coreOut, extOut, idx, ray);
 						return;
 					}
@@ -354,7 +361,7 @@ namespace Vera::Spectral::HWSS {
 					ray.m_Direction   = wi;
 					ray.m_Throughput  = thpt;
 					ray.flags &= ~RAY_FLAG_DELTA;
-					ray.m_RngState = rng.m_State;
+					ray.m_RngState = rng.pcg.m_State;
 					if (ray.m_BounceCount >= maxBounces) ray.flags |= RAY_FLAG_DEAD;
 					StoreRay(coreOut, extOut, idx, ray);
 					return;
@@ -619,7 +626,7 @@ namespace Vera::Spectral::HWSS {
 		ray.m_BounceCount += 1;
 		if (!RussianRoulette(thpt, rng, ray.m_BounceCount)) {
 			ray.flags |= RAY_FLAG_DEAD;
-			ray.m_RngState = rng.m_State;
+			ray.m_RngState = rng.pcg.m_State;
 			StoreRay(coreOut, extOut, idx, ray);
 			return;
 		}
@@ -631,7 +638,7 @@ namespace Vera::Spectral::HWSS {
 		ray.flags &= ~RAY_FLAG_DELTA;
 		if (mat.type == MaterialType::Dielectric && mat.roughness <= 0.f)
 			ray.flags |= RAY_FLAG_DELTA; // perfectly smooth — still a true delta BSDF, no NEE for it
-		ray.m_RngState = rng.m_State;
+		ray.m_RngState = rng.pcg.m_State;
 
 		if (ray.m_BounceCount >= maxBounces) ray.flags |= RAY_FLAG_DEAD;
 

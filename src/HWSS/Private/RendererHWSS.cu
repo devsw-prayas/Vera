@@ -42,6 +42,7 @@ namespace Vera::Spectral::HWSS {
 		cudaMalloc(&extA.iorCurr,      rayCount * sizeof(float));
 		cudaMalloc(&extA.mediumIdx,    rayCount * sizeof(unsigned char));
 		cudaMalloc(&extA.bsdfPdf,      rayCount * sizeof(float));
+		cudaMalloc(&extA.sampleIdx,    rayCount * sizeof(unsigned int));
 		cudaMalloc(&extB.wavelengths,  rayCount * sizeof(float4));
 		cudaMalloc(&extB.throughput,   rayCount * sizeof(float4));
 		cudaMalloc(&extB.pdf,          rayCount * sizeof(float4));
@@ -51,6 +52,7 @@ namespace Vera::Spectral::HWSS {
 		cudaMalloc(&extB.iorCurr,      rayCount * sizeof(float));
 		cudaMalloc(&extB.mediumIdx,    rayCount * sizeof(unsigned char));
 		cudaMalloc(&extB.bsdfPdf,      rayCount * sizeof(float));
+		cudaMalloc(&extB.sampleIdx,    rayCount * sizeof(unsigned int));
 
 		Core::WavefrontHitRecord* d_hits = nullptr;
 		cudaMalloc(&d_hits,  rayCount * sizeof(Core::WavefrontHitRecord));
@@ -91,9 +93,11 @@ namespace Vera::Spectral::HWSS {
 		cudaFree(extA.wavelengths); cudaFree(extA.throughput);   cudaFree(extA.pdf);
 		cudaFree(extA.rngState);    cudaFree(extA.pixelId);      cudaFree(extA.bounceCount);
 		cudaFree(extA.iorCurr);     cudaFree(extA.mediumIdx);    cudaFree(extA.bsdfPdf);
+		cudaFree(extA.sampleIdx);
 		cudaFree(extB.wavelengths); cudaFree(extB.throughput);   cudaFree(extB.pdf);
 		cudaFree(extB.rngState);    cudaFree(extB.pixelId);      cudaFree(extB.bounceCount);
 		cudaFree(extB.iorCurr);     cudaFree(extB.mediumIdx);    cudaFree(extB.bsdfPdf);
+		cudaFree(extB.sampleIdx);
 		cudaFree(d_hits);
 
 		float cieYIntegral = CIE_Y_Integral(LAMBDA_MIN, LAMBDA_MAX);

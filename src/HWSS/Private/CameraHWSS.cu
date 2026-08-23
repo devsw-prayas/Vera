@@ -1,6 +1,7 @@
 #include "CameraHWSS.cuh"
 #include "SpectralConstants.h"
 #include "PCG32.cuh"
+#include "QMCHWSS.h"
 #include <cfloat>
 #include <CudaMath.h>
 
@@ -17,8 +18,11 @@ namespace Vera::Spectral::HWSS {
 		unsigned long long seedValue = static_cast<unsigned long long>(pixelId) * 1973ULL
 			+ static_cast<unsigned long long>(sampleIdx) * 9277ULL + 1ULL;
 
-		Core::PCG32 rng;
-		rng.seed(seedValue);
+		HybridRNG rng{};
+		rng.pcg.seed(seedValue);
+		rng.sampleIdx = sampleIdx;
+		rng.pixelId   = pixelId;
+		rng.dimBase   = 0; // camera ray-gen owns QMC dims [0, kQmcCameraDims)
 
 		// Sub-pixel jitter
 		float2 uv  = rng.nextFloat2();
@@ -65,8 +69,9 @@ namespace Vera::Spectral::HWSS {
 		ray.m_Wavelengths  = wavelengths;
 		ray.m_Throughput   = make_float4(1.f, 1.f, 1.f, 1.f);
 		ray.m_Pdf          = make_float4(lanePdf, lanePdf, lanePdf, lanePdf);
-		ray.m_RngState     = rng.m_State;
+		ray.m_RngState     = rng.pcg.m_State;
 		ray.pixelId        = pixelId;
+		ray.m_SampleIdx    = sampleIdx;
 		ray.m_BounceCount  = 0;
 		ray.m_BsdfPdf      = 1.f; // irrelevant while RAY_FLAG_DELTA is set below
 		// Mark as delta so first emissive hit uses w=1 (camera has no competing NEE strategy)

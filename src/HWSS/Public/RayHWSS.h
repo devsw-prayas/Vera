@@ -40,6 +40,11 @@ namespace Vera::Spectral::HWSS {
 		// BSDF-sampled ray that happens to land on a light against NEE. Meaningless
 		// when RAY_FLAG_DELTA is set (no competing NEE strategy for that bounce).
 		float              m_BsdfPdf = 1.f;
+		// Which of the pixel's samplesPerPixel accumulation passes this path belongs to
+		// (set once at ray-gen, constant for the path's whole lifetime). Together with
+		// pixelId and the current bounce count, this is the QMC "which low-discrepancy
+		// point" index — see QMCHWSS.h's HybridRNG.
+		unsigned int       m_SampleIdx;
 	};
 
 	// Struct-of-arrays wavefront ray storage. TraversalKernelWavefront only ever reads
@@ -69,6 +74,7 @@ namespace Vera::Spectral::HWSS {
 		float*              iorCurr     = nullptr;
 		unsigned char*      mediumIdx   = nullptr;
 		float*              bsdfPdf     = nullptr;
+		unsigned int*       sampleIdx   = nullptr;
 	};
 
 	__device__ __forceinline__ RayHWSS LoadRay(const RayCoreSoA& core, const RayExtSoA& ext, uint32_t i) {
@@ -85,6 +91,7 @@ namespace Vera::Spectral::HWSS {
 		ray.m_IorCurr     = ext.iorCurr[i];
 		ray.m_MediumIdx   = ext.mediumIdx[i];
 		ray.m_BsdfPdf     = ext.bsdfPdf[i];
+		ray.m_SampleIdx   = ext.sampleIdx[i];
 		return ray;
 	}
 
@@ -101,5 +108,6 @@ namespace Vera::Spectral::HWSS {
 		ext.iorCurr[i]    = ray.m_IorCurr;
 		ext.mediumIdx[i]  = ray.m_MediumIdx;
 		ext.bsdfPdf[i]    = ray.m_BsdfPdf;
+		ext.sampleIdx[i]  = ray.m_SampleIdx;
 	}
 }
