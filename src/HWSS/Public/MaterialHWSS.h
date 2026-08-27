@@ -23,15 +23,22 @@ namespace Vera::Spectral::HWSS {
 	// RGB2Spec (designed for [0,1] reflectance) can't represent, so F0 is baked
 	// the same way as Lambertian albedo instead.
 	//
-	// Dielectric dispersion is optional: cauchyB == 0 means a constant IOR; a
-	// nonzero cauchyB enables wavelength-dependent IOR via the Cauchy equation
-	// (see EvalIOR) for chromatic dispersion (e.g. prism/glass fringing).
+	// Dielectric dispersion is optional: sellB1 == 0 && sellB2 == 0 means a constant IOR
+	// (mat.ior); nonzero Sellmeier coefficients enable wavelength-dependent IOR via the
+	// 2-term Sellmeier equation (see EvalIOR) for chromatic dispersion (e.g. prism/glass
+	// fringing, diamond fire). 2-term beats a Cauchy fit strictly (measured against real
+	// 3-term glass/diamond Sellmeier ground truth over 380-700nm) for the same handful of
+	// extra coefficients, and — since MaterialSortHWSS groups shading by material id — the
+	// extra divisions are warp-uniform within a batch, not a per-lane divergence cost.
 	struct Material final {
 		RGBSigmoidPolynomial albedoSpec;   // Lambertian reflectance / GGX Schlick F0 / Emissive base color
 		float                emissiveScale = 0.f; // Emissive: radiance multiplier; unused otherwise
 		float                roughness     = 0.f;
-		float                ior           = 1.5f; // Dielectric base IOR (at reference wavelength)
-		float                cauchyB       = 0.f;  // Dielectric dispersion strength (um^2); 0 = achromatic
+		float                ior           = 1.5f; // Dielectric IOR when dispersion is disabled
+		float                sellB1        = 0.f;  // Sellmeier term 1 coefficient; 0 = achromatic
+		float                sellC1        = 0.f;  // Sellmeier term 1 resonance (um^2)
+		float                sellB2        = 0.f;  // Sellmeier term 2 coefficient
+		float                sellC2        = 0.f;  // Sellmeier term 2 resonance (um^2)
 		MaterialType         type          = MaterialType::Lambertian;
 		uint8_t              mediumIdx     = 0;    // Dielectric interior medium (1-indexed, 0 = vacuum)
 		uint8_t              pad[2]        = {};
@@ -45,11 +52,17 @@ namespace Vera::Spectral::HWSS {
 		return mat.albedoSpec(lambda) * mat.emissiveScale;
 	}
 
-	// Cauchy's equation: n(lambda) = ior + cauchyB / lambda_um^2. lambda is in nm.
+	__host__ __device__ inline bool IsDispersive(const Material& mat) {
+		return mat.sellB1 != 0.f || mat.sellB2 != 0.f;
+	}
+
+	// 2-term Sellmeier equation: n^2(lambda) = 1 + B1*l^2/(l^2-C1) + B2*l^2/(l^2-C2),
+	// l in um. lambda is in nm.
 	__host__ __device__ inline float EvalIOR(const Material& mat, float lambda) {
-		if (mat.cauchyB == 0.f) return mat.ior;
-		float lambdaUm = lambda * 0.001f;
-		return mat.ior + mat.cauchyB / (lambdaUm * lambdaUm);
+		if (!IsDispersive(mat)) return mat.ior;
+		float l2 = lambda * lambda * 1e-6f;
+		float n2 = 1.f + mat.sellB1 * l2 / (l2 - mat.sellC1) + mat.sellB2 * l2 / (l2 - mat.sellC2);
+		return sqrtf(fmaxf(n2, 1e-6f));
 	}
 
 	// ── Host-side factories: bake an artist RGB color into spectral coefficients ──
@@ -69,13 +82,27 @@ namespace Vera::Spectral::HWSS {
 		return m;
 	}
 
-	inline Material MakeDielectric(float ior, float roughness, uint8_t mediumIdx = 0, float cauchyB = 0.f) {
+	inline Material MakeDielectric(float ior, float roughness, uint8_t mediumIdx = 0) {
 		Material m{};
 		m.type = MaterialType::Dielectric;
 		m.ior = ior;
 		m.roughness = roughness;
 		m.mediumIdx = mediumIdx;
-		m.cauchyB = cauchyB;
+		return m;
+	}
+
+	// Sellmeier coefficients (um^2) from a real glass/gem catalog fit, e.g. diamond
+	// (Peter 1923): B1=4.3356 C1=0.1060^2 B2=0.3306 C2=0.1750^2.
+	inline Material MakeDispersiveDielectric(
+		float sellB1, float sellC1, float sellB2, float sellC2,
+		float roughness, uint8_t mediumIdx = 0)
+	{
+		Material m{};
+		m.type = MaterialType::Dielectric;
+		m.sellB1 = sellB1; m.sellC1 = sellC1;
+		m.sellB2 = sellB2; m.sellC2 = sellC2;
+		m.roughness = roughness;
+		m.mediumIdx = mediumIdx;
 		return m;
 	}
 

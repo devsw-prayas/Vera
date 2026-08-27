@@ -60,11 +60,24 @@ namespace Vera::Core {
 		std::vector<NXB::Triangle>& hTris, std::vector<uint16_t>&     hMatIds,
 		float3 center, float radius, uint16_t matId);
 
-	// Five-wall box room (no front wall) from [-1,-1,-1] to [+1,+1,+1].
+	// Simplified round-brilliant-cut diamond: flat octagonal table, 8 sloped crown
+	// (bezel) facets down to an octagonal girdle, 8 sloped pavilion facets down to a
+	// single culet point. Not the full 57/58-facet real cut, but a genuinely faceted
+	// solid (not a sphere proxy) — enough for real per-facet refraction/TIR/dispersion.
+	// axis: table-to-culet direction (need not be +Y — pass e.g. (1,0,0) to lay the
+	// diamond on its side).
+	void AppendDiamondMesh(
+		std::vector<float3>&        hPos, std::vector<float3>&        hNorms,
+		std::vector<NXB::Triangle>& hTris, std::vector<uint16_t>&     hMatIds,
+		float3 center, float girdleRadius, float tableRadius,
+		float crownHeight, float pavilionDepth, uint16_t matId,
+		float3 axis = make_float3(0.f, 1.f, 0.f));
+
+	// Five-wall box room (no front wall) from [-scale,-scale,-scale] to [+scale,+scale,+scale].
 	// matFloor/matCeil/matBack/matLeft/matRight are material indices.
 	void AppendBoxWalls(
 		std::vector<float3>&        hPos, std::vector<float3>&        hNorms,
 		std::vector<NXB::Triangle>& hTris, std::vector<uint16_t>&     hMatIds,
 		uint16_t matFloor, uint16_t matCeil, uint16_t matBack,
-		uint16_t matLeft,  uint16_t matRight);
+		uint16_t matLeft,  uint16_t matRight, float scale = 1.f);
 }

@@ -61,7 +61,7 @@ namespace Vera::Spectral::HWSS {
 	// helps), then survival probability tracks the throughput itself (higher
 	// remaining energy => more likely to keep tracing) and surviving lanes are
 	// rescaled by 1/q so the estimator stays unbiased in expectation.
-	__device__ inline bool RussianRoulette(float4& thpt, HybridRNG& rng, uint32_t bounceCount, uint32_t minBounces = 4) {
+	__device__ inline bool RussianRoulette(float4& thpt, HybridRNG& rng, uint32_t bounceCount, uint32_t minBounces = 12) {
 		if (bounceCount < minBounces) return true;
 		float maxComp = fmaxf(fmaxf(thpt.x, thpt.y), fmaxf(thpt.z, thpt.w));
 		float q = fminf(fmaxf(maxComp, 0.05f), 0.95f);
@@ -706,7 +706,7 @@ namespace Vera::Spectral::HWSS {
 						ray.m_IorCurr = etaT;
 						// entering the dielectric's interior medium (0 = vacuum/exit)
 						ray.m_MediumIdx = entering ? mat.mediumIdx : 0;
-						if (mat.cauchyB != 0.f) {
+						if (IsDispersive(mat)) {
 							// Dispersive: offset lanes would refract at different angles than
 							// the hero direction we traced — collapse to hero-only (Wilkie et al.).
 							ray.flags |= RAY_FLAG_DISPERSED;
@@ -767,7 +767,7 @@ namespace Vera::Spectral::HWSS {
 
 						ray.m_IorCurr = etaT;
 						ray.m_MediumIdx = entering ? mat.mediumIdx : 0;
-						if (mat.cauchyB != 0.f) {
+						if (IsDispersive(mat)) {
 							ray.flags |= RAY_FLAG_DISPERSED;
 							ray.m_Pdf.y = ray.m_Pdf.z = ray.m_Pdf.w = 0.f;
 							thpt.y = thpt.z = thpt.w = 0.f;

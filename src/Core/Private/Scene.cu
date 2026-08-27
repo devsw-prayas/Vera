@@ -147,12 +147,91 @@ namespace Vera::Core {
 		}
 	}
 
-	// Five-wall box room (no front wall) from [-1,-1,-1] to [+1,+1,+1].
+	void AppendDiamondMesh(
+		std::vector<float3>&        hPos, std::vector<float3>&        hNorms,
+		std::vector<NXB::Triangle>& hTris, std::vector<uint16_t>&     hMatIds,
+		float3 center, float girdleRadius, float tableRadius,
+		float crownHeight, float pavilionDepth, uint16_t matId, float3 axis)
+	{
+		// Orthonormal basis around `axis` (the table-to-culet direction; defaults to +Y
+		// for "standing" — pass e.g. (1,0,0) to lay the diamond on its side).
+		float axisLen = sqrtf(axis.x*axis.x + axis.y*axis.y + axis.z*axis.z);
+		axis = make_float3(axis.x/axisLen, axis.y/axisLen, axis.z/axisLen);
+		float3 helper = fabsf(axis.y) < 0.99f ? make_float3(0,1,0) : make_float3(1,0,0);
+		float3 tangent = { axis.y*helper.z-axis.z*helper.y, axis.z*helper.x-axis.x*helper.z, axis.x*helper.y-axis.y*helper.x };
+		float tlen = sqrtf(tangent.x*tangent.x + tangent.y*tangent.y + tangent.z*tangent.z);
+		tangent = make_float3(tangent.x/tlen, tangent.y/tlen, tangent.z/tlen);
+		float3 bitangent = { axis.y*tangent.z-axis.z*tangent.y, axis.z*tangent.x-axis.x*tangent.z, axis.x*tangent.y-axis.y*tangent.x };
+
+		constexpr int N = 8;
+		float3 girdle[N], table[N];
+		for (int k = 0; k < N; ++k) {
+			// Rotate the girdle so one pavilion facet sits flat on the floor.
+			float ang = 2.f * PI * k / N + 112.5f * PI / 180.f;
+			float c = cosf(ang), s = sinf(ang);
+			girdle[k] = make_float3(
+				center.x + girdleRadius * (c*tangent.x + s*bitangent.x),
+				center.y + girdleRadius * (c*tangent.y + s*bitangent.y),
+				center.z + girdleRadius * (c*tangent.z + s*bitangent.z));
+			float3 tableOff = make_float3(
+				tableRadius * (c*tangent.x + s*bitangent.x),
+				tableRadius * (c*tangent.y + s*bitangent.y),
+				tableRadius * (c*tangent.z + s*bitangent.z));
+			table[k] = make_float3(
+				center.x + axis.x*crownHeight + tableOff.x,
+				center.y + axis.y*crownHeight + tableOff.y,
+				center.z + axis.z*crownHeight + tableOff.z);
+		}
+		float3 tableCenter = make_float3(center.x + axis.x*crownHeight, center.y + axis.y*crownHeight, center.z + axis.z*crownHeight);
+		float3 culet       = make_float3(center.x - axis.x*pavilionDepth, center.y - axis.y*pavilionDepth, center.z - axis.z*pavilionDepth);
+
+		auto pushTri = [&](float3 a, float3 b, float3 c, float3 n) {
+			hPos.push_back(a); hNorms.push_back(n);
+			hPos.push_back(b); hNorms.push_back(n);
+			hPos.push_back(c); hNorms.push_back(n);
+			hTris.push_back({ a, b, c });
+			hMatIds.push_back(matId);
+		};
+
+		// Geometric face normal, re-oriented outward from `center` regardless of winding.
+		auto outwardNormal = [&](float3 a, float3 b, float3 c) -> float3 {
+			float3 e1 = { b.x-a.x, b.y-a.y, b.z-a.z };
+			float3 e2 = { c.x-a.x, c.y-a.y, c.z-a.z };
+			float3 n  = { e1.y*e2.z-e1.z*e2.y, e1.z*e2.x-e1.x*e2.z, e1.x*e2.y-e1.y*e2.x };
+			float len = sqrtf(n.x*n.x + n.y*n.y + n.z*n.z);
+			n = { n.x/len, n.y/len, n.z/len };
+			float3 centroid = { (a.x+b.x+c.x)/3.f, (a.y+b.y+c.y)/3.f, (a.z+b.z+c.z)/3.f };
+			float3 out = { centroid.x-center.x, centroid.y-center.y, centroid.z-center.z };
+			float d = n.x*out.x + n.y*out.y + n.z*out.z;
+			return d < 0.f ? make_float3(-n.x,-n.y,-n.z) : n;
+		};
+
+		// Table: flat top octagon.
+		for (int k = 0; k < N; ++k) {
+			int kn = (k+1) % N;
+			pushTri(tableCenter, table[k], table[kn], axis);
+		}
+		// Crown (bezel) facets: table ring -> girdle ring, 8 quads (2 tris each).
+		for (int k = 0; k < N; ++k) {
+			int kn = (k+1) % N;
+			float3 n = outwardNormal(table[k], girdle[k], girdle[kn]);
+			pushTri(table[k], girdle[k], girdle[kn], n);
+			pushTri(table[k], girdle[kn], table[kn], n);
+		}
+		// Pavilion facets: girdle ring -> culet, 8 triangles.
+		for (int k = 0; k < N; ++k) {
+			int kn = (k+1) % N;
+			float3 n = outwardNormal(girdle[k], culet, girdle[kn]);
+			pushTri(girdle[k], culet, girdle[kn], n);
+		}
+	}
+
+	// Five-wall box room (no front wall) from [-scale,-scale,-scale] to [+scale,+scale,+scale].
 	void AppendBoxWalls(
 		std::vector<float3>&        hPos, std::vector<float3>&        hNorms,
 		std::vector<NXB::Triangle>& hTris, std::vector<uint16_t>&     hMatIds,
 		uint16_t matFloor, uint16_t matCeil, uint16_t matBack,
-		uint16_t matLeft,  uint16_t matRight)
+		uint16_t matLeft,  uint16_t matRight, float scale)
 	{
 		float3 bv[30] = {
 			{-1,-1,-1},{ 1,-1,-1},{ 1,-1, 1},  // floor tri0
@@ -166,6 +245,7 @@ namespace Vera::Core {
 			{ 1,-1,-1},{ 1, 1, 1},{ 1,-1, 1},  // right tri0
 			{ 1,-1,-1},{ 1, 1,-1},{ 1, 1, 1},  // right tri1
 		};
+		for (int i = 0; i < 30; ++i) { bv[i].x *= scale; bv[i].y *= scale; bv[i].z *= scale; }
 		float3 bn[30];
 		for (int i=0;  i<6;  ++i) bn[i] = {0, 1,0};
 		for (int i=6;  i<12; ++i) bn[i] = {0,-1,0};
