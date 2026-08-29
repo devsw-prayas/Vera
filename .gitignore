@@ -117,3 +117,10 @@ CLAUDE.md
 profiling/*.ncu-rep
 profiling/*.nsys-rep
 profiling/*.sqlite
+
+# Python frontend
+__pycache__/
+*.egg-info/
+/dist/
+/wheelhouse/
+*.pyd

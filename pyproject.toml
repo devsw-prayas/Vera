@@ -1,0 +1,22 @@
+[build-system]
+requires = ["scikit-build-core>=0.9", "nanobind>=2.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "vera"
+version = "0.1.0"
+description = "Vera — experimental spectral path tracer (Python frontend)"
+requires-python = ">=3.8"
+dependencies = ["numpy"]
+
+[tool.scikit-build]
+# The extension lives at the repo root CMakeLists; only build the Python target.
+cmake.args = ["-DVERA_BUILD_PYTHON=ON", "-DVERA_BUILD_CLI=OFF"]
+cmake.build-type = "Release"
+wheel.packages = ["python/vera"]
+build-dir = "build/skbuild"
+
+# `pip install -e . --no-build-isolation` for an editable dev install
+# (needs: pip install nanobind scikit-build-core numpy, plus the CUDA toolkit).
+[tool.scikit-build.editable]
+mode = "redirect"
