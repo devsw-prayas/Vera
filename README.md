@@ -20,11 +20,11 @@ A rough dielectric sphere showing spectral refraction and dispersion.
 ![Heterogeneous fog test](assets/heterogeneous_fog.png)
 A radial density fog volume rendered with heterogeneous Woodcock tracking.
 
-![Cinematic diamond studio](cinematic_full_room.png)
+![Cinematic diamond studio](assets/cinematic_full_room.png)
 A cinematic five-diamond studio shot in an enclosed room with a luminous rear wall and ceiling
 light, rendered with ACES at 1920x1080, 1024 samples per pixel, and 32 bounces.
 
-![Cinematic diamond studio with haze](cinematic_full_room_haze.png)
+![Cinematic diamond studio with haze](assets/cinematic_full_room_haze.png)
 The same enclosed room with subtle atmospheric haze.
 
 ## Papers
