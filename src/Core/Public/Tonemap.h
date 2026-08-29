@@ -3,7 +3,9 @@
 #include <cmath>
 
 namespace Vera::Core {
-	enum class ToneMapper { Reinhard, ACES, AgX, Linear };
+	// Raw: identity, no clamp — resolve keeps unbounded linear radiance (for HDR
+	// output / renderer comparisons). Linear: clamped to [0,1] for display.
+	enum class ToneMapper { Reinhard, ACES, AgX, Linear, Raw };
 
 	//  Reinhard
 	__host__ __device__ static inline float3 tonemapReinhard(float3 c) {
@@ -106,6 +108,7 @@ namespace Vera::Core {
 		case ToneMapper::AgX:      return tonemapAgX(c);
 		case ToneMapper::Reinhard: return tonemapReinhard(c);
 		case ToneMapper::Linear:   return { fmaxf(0.f,fminf(1.f,c.x)), fmaxf(0.f,fminf(1.f,c.y)), fmaxf(0.f,fminf(1.f,c.z)) };
+		case ToneMapper::Raw:      return c;
 		}
 		return tonemapAgX(c);
 	}

@@ -37,6 +37,11 @@ namespace Vera::Spectral::HWSS {
 		float3 rgb = XYZToLinearSRGB(xyz);
 		rgb.x *= exposure; rgb.y *= exposure; rgb.z *= exposure;
 		rgb = Core::applyTonemap(tm, rgb);
-		outRGB[idx] = make_float4(LinearToSRGB(rgb.x), LinearToSRGB(rgb.y), LinearToSRGB(rgb.z), 1.f);
+		// Raw: emit unbounded linear-sRGB radiance (no OETF, no clamp) for HDR
+		// output / renderer comparisons. Everything else gets the sRGB OETF.
+		if (tm == Core::ToneMapper::Raw)
+			outRGB[idx] = make_float4(rgb.x, rgb.y, rgb.z, 1.f);
+		else
+			outRGB[idx] = make_float4(LinearToSRGB(rgb.x), LinearToSRGB(rgb.y), LinearToSRGB(rgb.z), 1.f);
 	}
 }

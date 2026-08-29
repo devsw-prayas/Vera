@@ -60,6 +60,18 @@ namespace Vera::Core {
 		std::vector<NXB::Triangle>& hTris, std::vector<uint16_t>&     hMatIds,
 		float3 center, float radius, uint16_t matId);
 
+	// Generic indexed triangle mesh, unindexed into the engine's triangle soup.
+	// indices holds indexCount entries (3 per face) into verts[0..vertCount).
+	// If vertNormals != nullptr its per-vertex normals are carried through per
+	// face corner (smooth shading); otherwise a flat geometric face normal is
+	// used for all three corners. Every appended triangle gets material matId.
+	void AppendMesh(
+		std::vector<float3>&        hPos, std::vector<float3>&        hNorms,
+		std::vector<NXB::Triangle>& hTris, std::vector<uint16_t>&     hMatIds,
+		const float3* verts, uint32_t vertCount,
+		const uint32_t* indices, uint32_t indexCount,
+		const float3* vertNormals, uint16_t matId);
+
 	// Simplified round-brilliant-cut diamond: flat octagonal table, 8 sloped crown
 	// (bezel) facets down to an octagonal girdle, 8 sloped pavilion facets down to a
 	// single culet point. Not the full 57/58-facet real cut, but a genuinely faceted

@@ -147,6 +147,38 @@ namespace Vera::Core {
 		}
 	}
 
+	void AppendMesh(
+		std::vector<float3>&        hPos, std::vector<float3>&        hNorms,
+		std::vector<NXB::Triangle>& hTris, std::vector<uint16_t>&     hMatIds,
+		const float3* verts, uint32_t vertCount,
+		const uint32_t* indices, uint32_t indexCount,
+		const float3* vertNormals, uint16_t matId)
+	{
+		for (uint32_t i = 0; i + 2 < indexCount; i += 3) {
+			uint32_t i0 = indices[i], i1 = indices[i + 1], i2 = indices[i + 2];
+			if (i0 >= vertCount || i1 >= vertCount || i2 >= vertCount) continue;
+			float3 a = verts[i0], b = verts[i1], c = verts[i2];
+
+			float3 n0, n1, n2;
+			if (vertNormals) {
+				n0 = vertNormals[i0]; n1 = vertNormals[i1]; n2 = vertNormals[i2];
+			} else {
+				float3 e1 = { b.x - a.x, b.y - a.y, b.z - a.z };
+				float3 e2 = { c.x - a.x, c.y - a.y, c.z - a.z };
+				float3 fn = { e1.y*e2.z - e1.z*e2.y, e1.z*e2.x - e1.x*e2.z, e1.x*e2.y - e1.y*e2.x };
+				float len = sqrtf(fn.x*fn.x + fn.y*fn.y + fn.z*fn.z);
+				if (len > 0.f) { fn.x /= len; fn.y /= len; fn.z /= len; }
+				n0 = n1 = n2 = fn;
+			}
+
+			hPos.push_back(a); hNorms.push_back(n0);
+			hPos.push_back(b); hNorms.push_back(n1);
+			hPos.push_back(c); hNorms.push_back(n2);
+			hTris.push_back({ a, b, c });
+			hMatIds.push_back(matId);
+		}
+	}
+
 	void AppendDiamondMesh(
 		std::vector<float3>&        hPos, std::vector<float3>&        hNorms,
 		std::vector<NXB::Triangle>& hTris, std::vector<uint16_t>&     hMatIds,
