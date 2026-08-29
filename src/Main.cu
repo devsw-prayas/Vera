@@ -7,6 +7,7 @@
 
 #include <Scene.cuh>
 #include <Camera.cuh>
+#include <HdrImage.h>
 
 #include "MaterialHWSS.h"
 #include "EnvMapHWSS.h"
@@ -120,7 +121,20 @@ int main() {
 
 	SceneLightingHWSS lighting = BuildSceneLighting(hPos, hMatIds, hMaterials, hMedia);
 
-	EnvMapHWSS envMap = MakeConstEnvMap(rgb2spec, make_float3(0.f, 0.f, 0.f), 0.f);
+	// Environment light: an equirectangular HDRI if one is available (path via the
+	// VERA_ENV_HDRI env var, else the default below), otherwise a black constant env.
+	const char* hdriPath = std::getenv("VERA_ENV_HDRI");
+	if (!hdriPath) hdriPath = VERA_DATA_DIR "env.hdr";
+	EnvMapHWSS envMap;
+	Vera::Core::HdrImage hdri = Vera::Core::LoadHdr(hdriPath);
+	if (hdri.ok()) {
+		printf("Env: loaded HDRI '%s' (%dx%d)\n", hdriPath, hdri.width, hdri.height);
+		HdrEnvSource src{ hdri.pixels.data(), hdri.width, hdri.height };
+		envMap = MakeImageEnvMap(rgb2spec, src, /*intensity*/ 1.f);
+	} else {
+		printf("Env: no HDRI at '%s' — using black constant env\n", hdriPath);
+		envMap = MakeConstEnvMap(rgb2spec, make_float3(0.f, 0.f, 0.f), 0.f);
+	}
 
 	// ── Camera: low three-quarter cinematic composition ───────────────────────
 	uint32_t width = 1920, height = 1080;
@@ -166,6 +180,7 @@ int main() {
 
 	cudaFree(d_outRGB);
 	FreeFrameBuffer(fb);
+	FreeImageEnvMap(envMap);
 	FreeSceneLighting(lighting);
 	Vera::Core::FreeScene(scene);
 	RGB2SpecTable::Free(rgb2spec);

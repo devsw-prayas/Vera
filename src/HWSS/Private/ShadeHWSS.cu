@@ -61,7 +61,7 @@ namespace Vera::Spectral::HWSS {
 	// helps), then survival probability tracks the throughput itself (higher
 	// remaining energy => more likely to keep tracing) and surviving lanes are
 	// rescaled by 1/q so the estimator stays unbiased in expectation.
-	__device__ inline bool RussianRoulette(float4& thpt, HybridRNG& rng, uint32_t bounceCount, uint32_t minBounces = 12) {
+	__device__ inline bool RussianRoulette(float4& thpt, HybridRNG& rng, uint32_t bounceCount, uint32_t minBounces = 4) {
 		if (bounceCount < minBounces) return true;
 		float maxComp = fmaxf(fmaxf(thpt.x, thpt.y), fmaxf(thpt.z, thpt.w));
 		float q = fminf(fmaxf(maxComp, 0.05f), 0.95f);
@@ -410,6 +410,133 @@ namespace Vera::Spectral::HWSS {
 		AccumulateContribution(fb, ray.pixelId, cieTex, ray.m_Wavelengths, nee, ray.m_Pdf, LeVec);
 	}
 
+	// Bit tags for the material lobe SampleDirectLightingEnv should evaluate.
+	enum EnvBsdfKind { ENV_BSDF_LAMBERT = 0, ENV_BSDF_GGX = 1, ENV_BSDF_ROUGH_DIELECTRIC = 2 };
+
+	// NEE against the environment map (textured mode only — a constant env is
+	// picked up fine by BSDF sampling on the miss path, no NEE for it). Importance-
+	// samples a direction from the lat-long luminance distribution, evaluates the
+	// surface BSDF for that direction, shadow-tests to infinity, and MIS-weights
+	// against the same BSDF-sampling pdf the miss-path env hit uses. Mirrors the
+	// LightBVH NEE functions above; the reflection/transmission lobe math for the
+	// GGX and rough-dielectric branches is identical to SampleDirectLightingGGX /
+	// SampleDirectLightingDielectricRough, just driven by an env-sampled wi.
+	//
+	// Skipped while inside a medium (ray.m_MediumIdx != 0): an env shadow ray from
+	// inside a dielectric would need to be tracked across the exit interface first;
+	// env NEE overwhelmingly fires on opaque surfaces in open air, so this is left
+	// as a documented gap rather than threading medium-crossing logic through here.
+	__device__ inline void SampleDirectLightingEnv(
+		Core::GeometryBuffers& geom, const EnvMapHWSS& envMap,
+		const float3& P, const float3& normal,
+		int bsdfKind, const float4& lambReflectance,
+		const float3& tangent, const float3& bitangent, const float3& wo_l,
+		float alpha, float etaI, float etaT, const Material& mat,
+		RayHWSS& ray, HybridRNG& rng, FrameBufferHWSS& fb, cudaTextureObject_t cieTex)
+	{
+		if (envMap.tex == 0 || ray.m_MediumIdx != 0) return;
+
+		float envPdf;
+		float3 wi = SampleEnvMap(envMap, rng.nextFloat2(), envPdf);
+		if (envPdf <= 0.f) return;
+
+		float3 shadowNormal = normal;
+		float  geomTerm     = 0.f;   // |cos| folded into the estimator
+		float  bsdfPdf      = 0.f;   // solid-angle pdf of wi under BSDF sampling (for MIS)
+		float4 fVal = make_float4(0.f, 0.f, 0.f, 0.f); // per-lane BSDF value
+
+		if (bsdfKind == ENV_BSDF_LAMBERT) {
+			float cosSurf = dot(wi, normal);
+			if (cosSurf <= 0.f) return;
+			geomTerm = cosSurf;
+			bsdfPdf  = MH::lambertianPdf(wi, normal);
+			fVal = make_float4(
+				MH::evalLambertian(lambReflectance.x), MH::evalLambertian(lambReflectance.y),
+				MH::evalLambertian(lambReflectance.z), MH::evalLambertian(lambReflectance.w));
+		}
+		else if (bsdfKind == ENV_BSDF_GGX) {
+			if (wo_l.z <= 0.f) return;
+			float3 wi_l = make_float3(dot(wi, tangent), dot(wi, bitangent), dot(wi, normal));
+			if (wi_l.z <= 0.f) return;
+
+			float3 h_l = normalize(wo_l + wi_l);
+			float  Dh  = MH::evalGGX(h_l, alpha);
+			float  vis = MH::ggxG2(wi_l, wo_l, alpha);
+			float  a2  = alpha * alpha;
+			float  G1wo = 2.f * wo_l.z / (wo_l.z + sqrtf(a2 + (1.f - a2) * wo_l.z * wo_l.z));
+			bsdfPdf  = G1wo * Dh / fmaxf(4.f * wo_l.z, 1e-7f);
+			geomTerm = wi_l.z;
+
+			float cosTheta = fmaxf(wo_l.z, 0.f); // macro-normal convention, matches SampleDirectLightingGGX
+			float f0 = EvalReflectance(mat, ray.m_Wavelengths.x);
+			float f1 = EvalReflectance(mat, ray.m_Wavelengths.y);
+			float f2 = EvalReflectance(mat, ray.m_Wavelengths.z);
+			float f3 = EvalReflectance(mat, ray.m_Wavelengths.w);
+			fVal = make_float4(
+				Dh * vis * MH::schlickFresnel(f0, cosTheta), Dh * vis * MH::schlickFresnel(f1, cosTheta),
+				Dh * vis * MH::schlickFresnel(f2, cosTheta), Dh * vis * MH::schlickFresnel(f3, cosTheta));
+		}
+		else { // ENV_BSDF_ROUGH_DIELECTRIC — achromatic value, mirrors SampleDirectLightingDielectricRough
+			if (wo_l.z <= 0.f) return;
+			float3 wi_l = make_float3(dot(wi, tangent), dot(wi, bitangent), dot(wi, normal));
+			if (fabsf(wi_l.z) < 1e-6f) return;
+
+			float a2   = alpha * alpha;
+			float G1wo = 2.f * wo_l.z / (wo_l.z + sqrtf(a2 + (1.f - a2) * wo_l.z * wo_l.z));
+			float value = 0.f;
+
+			if (wi_l.z > 0.f) {
+				float3 h_l = normalize(wo_l + wi_l);
+				float  cosThetaH = fmaxf(dot(wo_l, h_l), 0.f);
+				float  F  = MH::fresnelDielectric(cosThetaH, etaI, etaT);
+				float  Dh = MH::evalGGX(h_l, alpha);
+				float  vis = MH::ggxG2(wi_l, wo_l, alpha);
+				value   = Dh * vis * F;
+				bsdfPdf = F * G1wo * Dh / fmaxf(4.f * wo_l.z, 1e-7f);
+			} else {
+				float3 ht = normalize(-(etaT * wi_l + etaI * wo_l));
+				if (ht.z < 0.f) ht = -ht;
+				float cosThetaH = dot(wo_l, ht);
+				if (cosThetaH <= 0.f) return;
+
+				float F  = MH::fresnelDielectric(cosThetaH, etaI, etaT);
+				float Dh = MH::evalGGX(ht, alpha);
+				float vis = MH::ggxG2(make_float3(wi_l.x, wi_l.y, fabsf(wi_l.z)), wo_l, alpha);
+				float G2  = vis * 4.f * wo_l.z * fabsf(wi_l.z);
+
+				float denomJ = etaI * dot(wo_l, ht) + etaT * dot(wi_l, ht);
+				if (fabsf(denomJ) < 1e-7f) return;
+
+				float wiDotH = dot(wi_l, ht);
+				value = (1.f - F) * Dh * G2 * fabsf(wiDotH * cosThetaH)
+					/ fmaxf(wo_l.z * fabsf(wi_l.z), 1e-7f) / (denomJ * denomJ);
+
+				float dwh_dwi = etaT * etaT * fabsf(wiDotH) / (denomJ * denomJ);
+				bsdfPdf = (1.f - F) * (G1wo * Dh * fmaxf(cosThetaH, 0.f) / wo_l.z) * dwh_dwi;
+				shadowNormal = -normal;
+			}
+			if (value <= 0.f) return;
+			geomTerm = fabsf(wi_l.z);
+			fVal = make_float4(value, value, value, value);
+		}
+
+		if (bsdfPdf <= 0.f || geomTerm <= 0.f) return;
+		if (Vera::Core::TraverseAnyHit(geom, P + shadowNormal * 1e-4f, wi, 1e-4f, 1e30f)) return;
+
+		float4 LeVec = make_float4(
+			EvalEnvMapDir(envMap, wi, ray.m_Wavelengths.x), EvalEnvMapDir(envMap, wi, ray.m_Wavelengths.y),
+			EvalEnvMapDir(envMap, wi, ray.m_Wavelengths.z), EvalEnvMapDir(envMap, wi, ray.m_Wavelengths.w));
+
+		float misWeight = PowerHeuristic(envPdf, bsdfPdf);
+		float scale     = misWeight * geomTerm / envPdf;
+
+		float4 nee = ray.m_Throughput;
+		nee.x *= fVal.x * scale; nee.y *= fVal.y * scale;
+		nee.z *= fVal.z * scale; nee.w *= fVal.w * scale;
+
+		AccumulateContribution(fb, ray.pixelId, cieTex, ray.m_Wavelengths, nee, ray.m_Pdf, LeVec);
+	}
+
 	__global__ void ShadeKernelHWSSWavefront(
 		Core::GeometryBuffers geom,
 		RayCoreSoA coreIn,
@@ -544,10 +671,23 @@ namespace Vera::Spectral::HWSS {
 		}
 
 		if (!hit.m_Hit) {
+			float3 missDir = ray.m_Direction;
 			float4 LeVec = make_float4(
-				EvalEnvMap(envMap, ray.m_Wavelengths.x), EvalEnvMap(envMap, ray.m_Wavelengths.y),
-				EvalEnvMap(envMap, ray.m_Wavelengths.z), EvalEnvMap(envMap, ray.m_Wavelengths.w));
-			AccumulateContribution(fb, ray.pixelId, cieTex, ray.m_Wavelengths, ray.m_Throughput, ray.m_Pdf, LeVec);
+				EvalEnvMapDir(envMap, missDir, ray.m_Wavelengths.x), EvalEnvMapDir(envMap, missDir, ray.m_Wavelengths.y),
+				EvalEnvMapDir(envMap, missDir, ray.m_Wavelengths.z), EvalEnvMapDir(envMap, missDir, ray.m_Wavelengths.w));
+			// MIS against env NEE from the previous vertex: a non-delta bounce that
+			// missed to a textured env also had that direction explicitly sampled by
+			// SampleDirectLightingEnv, so down-weight this BSDF-sampled hit. Delta
+			// (camera / mirror) bounces have no competing env-NEE strategy => full weight.
+			float misWeight = 1.f;
+			if (envMap.tex != 0 && !(ray.flags & RAY_FLAG_DELTA)) {
+				float envPdf = EnvMapPdf(envMap, missDir);
+				misWeight = PowerHeuristic(ray.m_BsdfPdf, envPdf);
+			}
+			float4 wThpt = make_float4(
+				ray.m_Throughput.x * misWeight, ray.m_Throughput.y * misWeight,
+				ray.m_Throughput.z * misWeight, ray.m_Throughput.w * misWeight);
+			AccumulateContribution(fb, ray.pixelId, cieTex, ray.m_Wavelengths, wThpt, ray.m_Pdf, LeVec);
 			ray.flags |= RAY_FLAG_DEAD;
 			StoreRay(coreOut, extOut, idx, ray);
 			return;
@@ -620,6 +760,9 @@ namespace Vera::Spectral::HWSS {
 				EvalReflectance(mat, ray.m_Wavelengths.x), EvalReflectance(mat, ray.m_Wavelengths.y),
 				EvalReflectance(mat, ray.m_Wavelengths.z), EvalReflectance(mat, ray.m_Wavelengths.w));
 			SampleDirectLighting(geom, lightBvh, materials, media, P, normal, lambertianReflectance, ray, rng, fb, cieTex);
+			SampleDirectLightingEnv(geom, envMap, P, normal, ENV_BSDF_LAMBERT, lambertianReflectance,
+				make_float3(0.f, 0.f, 0.f), make_float3(0.f, 0.f, 0.f), make_float3(0.f, 0.f, 0.f),
+				0.f, 1.f, 1.f, mat, ray, rng, fb, cieTex);
 		}
 
 		float3 ggxTangent, ggxBitangent, ggxWo_l;
@@ -630,6 +773,8 @@ namespace Vera::Spectral::HWSS {
 			ggxAlpha = fmaxf(mat.roughness * mat.roughness, 1e-4f);
 			SampleDirectLightingGGX(geom, lightBvh, materials, media, P, normal, ggxTangent, ggxBitangent,
 				ggxWo_l, ggxAlpha, mat, ray, rng, fb, cieTex);
+			SampleDirectLightingEnv(geom, envMap, P, normal, ENV_BSDF_GGX, make_float4(0.f, 0.f, 0.f, 0.f),
+				ggxTangent, ggxBitangent, ggxWo_l, ggxAlpha, 1.f, 1.f, mat, ray, rng, fb, cieTex);
 		}
 
 		float3 wi;
@@ -735,6 +880,8 @@ namespace Vera::Spectral::HWSS {
 
 				SampleDirectLightingDielectricRough(geom, lightBvh, materials, media, P, normal, dTangent, dBitangent,
 					dWo_l, dAlpha, etaI, etaT, ray, rng, fb, cieTex);
+				SampleDirectLightingEnv(geom, envMap, P, normal, ENV_BSDF_ROUGH_DIELECTRIC, make_float4(0.f, 0.f, 0.f, 0.f),
+					dTangent, dBitangent, dWo_l, dAlpha, etaI, etaT, mat, ray, rng, fb, cieTex);
 
 				float3 h_l = MH::sampleGGXVNDF(dWo_l, dAlpha, rng.nextFloat2());
 				float  F   = MH::fresnelDielectric(dot(dWo_l, h_l), etaI, etaT);
