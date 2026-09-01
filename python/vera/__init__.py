@@ -27,6 +27,8 @@ dispersive_dielectric = _vera.dispersive_dielectric
 emissive = _vera.emissive
 fluorescent_lambertian = _vera.fluorescent_lambertian
 medium = _vera.medium
+fluorescent_medium = _vera.fluorescent_medium
+heterogeneous_fluorescent_medium = _vera.heterogeneous_fluorescent_medium
 camera_look_at = _vera.camera_look_at
 _render = _vera.render
 _render_xyz = _vera.render_xyz
@@ -34,7 +36,8 @@ _render_xyz = _vera.render_xyz
 __all__ = [
     "Material", "Medium", "Camera", "Scene",
     "lambertian", "ggx", "dielectric", "dispersive_dielectric", "emissive",
-    "fluorescent_lambertian", "medium",
+    "fluorescent_lambertian", "medium", "fluorescent_medium",
+    "heterogeneous_fluorescent_medium",
     "camera_look_at", "render", "render_hdr", "render_xyz", "save_png", "shapes",
 ]
 
@@ -83,23 +86,30 @@ def _unwrap(scene):
 
 
 def render(scene, camera, *, spp=256, max_bounces=32, tonemap="aces",
-           exposure=1.0, use_optix=False):
-    """Render `scene` from `camera`; returns tonemapped (H, W, 3) float32 in [0, 1]."""
-    return _render(_unwrap(scene), camera, spp, max_bounces, tonemap, exposure, use_optix)
+           exposure=1.0, use_optix=False, default_medium=0):
+    """Render `scene` from `camera`; returns tonemapped (H, W, 3) float32 in [0, 1].
+
+    `default_medium` is the 1-indexed medium slot the camera starts inside (0 = vacuum).
+    """
+    return _render(_unwrap(scene), camera, spp, max_bounces, tonemap, exposure,
+                   use_optix, default_medium)
 
 
-def render_hdr(scene, camera, *, spp=256, max_bounces=32, exposure=1.0, use_optix=False):
+def render_hdr(scene, camera, *, spp=256, max_bounces=32, exposure=1.0, use_optix=False,
+               default_medium=0):
     """Render with no tonemap/clamp - (H, W, 3) float32 of raw linear radiance."""
-    return _render(_unwrap(scene), camera, spp, max_bounces, "raw", exposure, use_optix)
+    return _render(_unwrap(scene), camera, spp, max_bounces, "raw", exposure,
+                   use_optix, default_medium)
 
 
-def render_xyz(scene, camera, *, spp=256, max_bounces=32, use_optix=False):
+def render_xyz(scene, camera, *, spp=256, max_bounces=32, use_optix=False, default_medium=0):
     """Raw per-pixel CIE XYZ radiance, (H, W, 3) float32 - no tonemap/exposure/sRGB.
 
     The space the renderer accumulates in, so the fluorescence tests compare it
-    directly against the DBR oracle's spectral radiance.
+    directly against the DBR oracle's spectral radiance. `default_medium` is the
+    1-indexed medium slot the camera starts inside (0 = vacuum).
     """
-    return _render_xyz(_unwrap(scene), camera, spp, max_bounces, use_optix)
+    return _render_xyz(_unwrap(scene), camera, spp, max_bounces, use_optix, default_medium)
 
 
 def save_png(path, img, gamma=False):

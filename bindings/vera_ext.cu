@@ -188,7 +188,8 @@ namespace {
 	nb::ndarray<nb::numpy, float, nb::shape<-1, -1, 3>>
 		render(Scene& scene, const Camera& camera,
 			   uint32_t spp, uint32_t max_bounces,
-			   const std::string& tonemap, float exposure, bool use_optix) {
+			   const std::string& tonemap, float exposure, bool use_optix,
+			   uint32_t default_medium) {
 		scene.build();
 
 		const uint32_t W = camera.m_Width, H = camera.m_Height;
@@ -207,7 +208,7 @@ namespace {
 			nb::gil_scoped_release nogil;
 			RenderHWSS(scene.gpu.geom, d_materials, scene.lighting.d_media, scene.lighting.lightBvh,
 					   scene.envMap, camera, fb, d_outRGB, spp, max_bounces,
-					   /*defaultMediumIdx*/ 0, tm, exposure, use_optix);
+					   default_medium, tm, exposure, use_optix);
 			cudaDeviceSynchronize();
 		}
 		cuda_check("render: RenderHWSS");
@@ -235,7 +236,8 @@ namespace {
 	// tests' cross-checks against the DBR oracle's spectral radiance.
 	nb::ndarray<nb::numpy, float, nb::shape<-1, -1, 3>>
 		render_xyz(Scene& scene, const Camera& camera,
-				   uint32_t spp, uint32_t max_bounces, bool use_optix) {
+				   uint32_t spp, uint32_t max_bounces, bool use_optix,
+				   uint32_t default_medium) {
 		scene.build();
 
 		const uint32_t W = camera.m_Width, H = camera.m_Height;
@@ -252,7 +254,7 @@ namespace {
 			nb::gil_scoped_release nogil;
 			RenderHWSS(scene.gpu.geom, d_materials, scene.lighting.d_media, scene.lighting.lightBvh,
 					   scene.envMap, camera, fb, d_outRGB, spp, max_bounces,
-					   /*defaultMediumIdx*/ 0, ToneMapper::Raw, 1.f, use_optix);
+					   default_medium, ToneMapper::Raw, 1.f, use_optix);
 			cudaDeviceSynchronize();
 		}
 		cuda_check("render_xyz: RenderHWSS");
@@ -325,6 +327,32 @@ NB_MODULE(_vera, m) {
 		return MakeMedium(spec_table(), f3(absorb), absorb_scale, f3(scatter), scatter_scale, g); },
 		nb::arg("absorb"), nb::arg("absorb_scale"), nb::arg("scatter"), nb::arg("scatter_scale"),
 		nb::arg("g") = 0.f);
+	m.def("fluorescent_medium",
+		  [](Vec3 absorb, float absorb_scale, Vec3 scatter, float scatter_scale, float g,
+			 float lam_ex, float lam_em, float sigma, float fluor_sigma_s, float quantum_yield) {
+			  return MakeFluorescentMedium(spec_table(), f3(absorb), absorb_scale, f3(scatter),
+										   scatter_scale, g, lam_ex, lam_em, sigma, fluor_sigma_s, quantum_yield); },
+		  nb::arg("absorb") = Vec3{ 0.f, 0.f, 0.f }, nb::arg("absorb_scale") = 0.f,
+		  nb::arg("scatter") = Vec3{ 1.f, 1.f, 1.f }, nb::arg("scatter_scale") = 0.f,
+		  nb::arg("g") = 0.f, nb::arg("lam_ex"), nb::arg("lam_em"),
+		  nb::arg("sigma") = 15.f, nb::arg("fluor_sigma_s"), nb::arg("quantum_yield") = 1.f);
+	m.def("heterogeneous_fluorescent_medium",
+		  [](nb::ndarray<const float, nb::ndim<3>, nb::c_contig, nb::device::cpu> density,
+			 Vec3 grid_min, Vec3 grid_max,
+			 Vec3 absorb, float absorb_scale, Vec3 scatter, float scatter_scale, float g,
+			 float lam_ex, float lam_em, float sigma, float fluor_sigma_s, float quantum_yield) {
+			  // EvalDensity indexes x fastest, so a C-contiguous array must be (Z,Y,X).
+			  int3 res = make_int3((int)density.shape(2), (int)density.shape(1), (int)density.shape(0));
+			  return MakeHeterogeneousFluorescentMedium(
+				  spec_table(), f3(absorb), absorb_scale, f3(scatter), scatter_scale, g,
+				  lam_ex, lam_em, sigma, fluor_sigma_s, quantum_yield,
+				  density.data(), res, f3(grid_min), f3(grid_max)); },
+		  nb::arg("density"), nb::arg("grid_min"), nb::arg("grid_max"),
+		  nb::arg("absorb") = Vec3{ 0.f, 0.f, 0.f }, nb::arg("absorb_scale") = 0.f,
+		  nb::arg("scatter") = Vec3{ 1.f, 1.f, 1.f }, nb::arg("scatter_scale") = 0.f,
+		  nb::arg("g") = 0.f, nb::arg("lam_ex"), nb::arg("lam_em"),
+		  nb::arg("sigma") = 15.f, nb::arg("fluor_sigma_s"), nb::arg("quantum_yield") = 1.f,
+		  "density: (Z,Y,X) float32 grid (C-contiguous -> x fastest, matching EvalDensity).");
 
 	nb::class_<Camera>(m, "Camera")
 		.def(nb::init<>())
@@ -372,10 +400,13 @@ NB_MODULE(_vera, m) {
 		  nb::arg("scene"), nb::arg("camera"),
 		  nb::arg("spp") = 256, nb::arg("max_bounces") = 32,
 		  nb::arg("tonemap") = "aces", nb::arg("exposure") = 1.f, nb::arg("use_optix") = false,
-		  "Render `scene` from `camera`; returns tonemapped (H, W, 3) float32 in [0, 1].");
+		  nb::arg("default_medium") = 0,
+		  "Render `scene` from `camera`; returns tonemapped (H, W, 3) float32 in [0, 1]. "
+		  "default_medium is the 1-indexed medium the camera starts inside (0 = vacuum).");
 	m.def("render_xyz", &render_xyz,
 		  nb::arg("scene"), nb::arg("camera"),
 		  nb::arg("spp") = 256, nb::arg("max_bounces") = 32, nb::arg("use_optix") = false,
+		  nb::arg("default_medium") = 0,
 		  "Raw per-pixel CIE XYZ radiance (no tonemap / exposure / sRGB); the space "
 		  "the renderer integrates in. Target for spectral-oracle cross-checks.");
 }
