@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "RGB2Spec.h"
+#include "FluorescenceHWSS.h"
 
 namespace Vera::Spectral::HWSS {
 	// Spectral participating medium. Coefficients are physical (unbounded), stored as a
@@ -15,6 +16,18 @@ namespace Vera::Spectral::HWSS {
 		RGBSigmoidPolynomial sigmaSShape;
 		float                sigmaSScale = 0.f; // scattering coefficient magnitude
 		float                g = 0.f;           // Henyey-Greenstein anisotropy [-1,1]
+
+		// rank-1 fluorophore; fluorQY == 0 means inert. Stokes: fluorLamEm > fluorLamEx.
+		// fluorSigmaS is the raw peak fluorescent scattering coefficient.
+		float fluorLamEx    = 0.f;
+		float fluorLamEm    = 0.f;
+		float fluorSigma    = 0.f;
+		float fluorSigmaS   = 0.f;
+		float fluorQY       = 0.f;
+		float fluorEmNorm   = 1.f;  // precomputed emission normalisation
+		float fluorAbsCdfLo = 0.f;  // precomputed excitation sampling bounds
+		float fluorAbsCdfHi = 1.f;
+		float fluorAbsNorm  = 1.f;
 
 		// Heterogeneous extension (nullptr => homogeneous):
 		float* d_density = nullptr; // dense grid, gridRes.x*gridRes.y*gridRes.z floats, x-fastest
@@ -89,6 +102,50 @@ namespace Vera::Spectral::HWSS {
 		return EvalSigmaAAt(m, p, lambda) + EvalSigmaSAt(m, p, lambda);
 	}
 
+	__host__ __device__ inline bool IsFluorescentMedium(const MediumHWSS& m) {
+		return m.fluorQY > 0.f;
+	}
+
+	// In-shift term: energy gathered at lambda from shorter wavelengths. The rank-1 integral
+	// over l_i of fluorSigmaS*QY*a(l_i)*e(lambda) collapses to fluorSigmaS*QY*N_a*e(lambda).
+	__host__ __device__ inline float EvalSigmaFluorIn(const MediumHWSS& m, float lambda) {
+		if (m.fluorQY <= 0.f) return 0.f;
+		float e = FluorEmissionRaw(lambda, m.fluorLamEm, m.fluorSigma) / fmaxf(m.fluorEmNorm, 1e-8f);
+		return m.fluorSigmaS * m.fluorQY * m.fluorAbsNorm * e;
+	}
+
+	// Out-shift term: energy shed from lambda to longer wavelengths -> fluorSigmaS*QY*a(lambda).
+	__host__ __device__ inline float EvalSigmaFluorOut(const MediumHWSS& m, float lambda) {
+		if (m.fluorQY <= 0.f) return 0.f;
+		return m.fluorSigmaS * m.fluorQY * FluorAbsorptionRaw(lambda, m.fluorLamEx, m.fluorSigma);
+	}
+
+	// Fluorescence-aware coefficients (Mojzik 2018 eq 3): sigma_t / sigma_s plus the out- / in-
+	// shift term. Drive transmittance and the free-path CDF. Reduce to EvalSigmaT/S when inert.
+	__host__ __device__ inline float EvalSigmaHatT(const MediumHWSS& m, float lambda) {
+		return EvalSigmaT(m, lambda) + EvalSigmaFluorOut(m, lambda);
+	}
+
+	__host__ __device__ inline float EvalSigmaHatS(const MediumHWSS& m, float lambda) {
+		return EvalSigmaS(m, lambda) + EvalSigmaFluorIn(m, lambda);
+	}
+
+	// density(x) scales the raw and fluorescent terms alike.
+	__device__ inline float EvalSigmaHatTAt(const MediumHWSS& m, float3 p, float lambda) {
+		float density = IsHeterogeneous(m) ? EvalDensity(m, p) : 1.f;
+		return density * EvalSigmaHatT(m, lambda);
+	}
+
+	__device__ inline float EvalSigmaHatSAt(const MediumHWSS& m, float3 p, float lambda) {
+		float density = IsHeterogeneous(m) ? EvalDensity(m, p) : 1.f;
+		return density * EvalSigmaHatS(m, lambda);
+	}
+
+	__device__ inline float EvalSigmaFluorInAt(const MediumHWSS& m, float3 p, float lambda) {
+		float density = IsHeterogeneous(m) ? EvalDensity(m, p) : 1.f;
+		return density * EvalSigmaFluorIn(m, lambda);
+	}
+
 	inline MediumHWSS MakeMedium(
 		const RGB2SpecTable& table,
 		float3 absorbColorRGB, float absorbScale,
@@ -131,5 +188,63 @@ namespace Vera::Spectral::HWSS {
 	inline void FreeHeterogeneousMedium(MediumHWSS& m) {
 		if (m.d_density) cudaFree(m.d_density);
 		m.d_density = nullptr;
+	}
+
+	// Elastic homogeneous medium + rank-1 fluorophore. Keep peak elastic + fluorescent
+	// extinction sane and quantumYield in [0,1]. Stokes requires lamEm > lamEx.
+	inline MediumHWSS MakeFluorescentMedium(
+		const RGB2SpecTable& table,
+		float3 absorbColorRGB, float absorbScale,
+		float3 scatterColorRGB, float scatterScale,
+		float g,
+		float lamEx, float lamEm, float sigma, float fluorSigmaS, float quantumYield) {
+		MediumHWSS m = MakeMedium(table, absorbColorRGB, absorbScale, scatterColorRGB, scatterScale, g);
+		m.fluorLamEx    = lamEx;
+		m.fluorLamEm    = lamEm;
+		m.fluorSigma    = sigma;
+		m.fluorSigmaS   = fluorSigmaS;
+		m.fluorQY       = quantumYield;
+		m.fluorEmNorm   = FluorEmissionNorm(lamEm, sigma);
+		m.fluorAbsCdfLo = FluorAbsCdfLo(lamEx, sigma);
+		m.fluorAbsCdfHi = FluorAbsCdfHi(lamEx, sigma);
+		m.fluorAbsNorm  = FluorAbsNorm(lamEx, sigma);
+
+		// Woodcock majorant bounds max(sigma_hat_s, sigma_hat_t) over the band, not just
+		// sigma_t - a strongly fluorescent medium can have sigma_hat_s > sigma_t.
+		float maxHat = absorbScale + scatterScale;
+		const int steps = 64;
+		for (int i = 0; i < steps; ++i) {
+			float l = LAMBDA_MIN + (LAMBDA_RANGE * i) / (steps - 1);
+			maxHat = fmaxf(maxHat, fmaxf(EvalSigmaHatT(m, l), EvalSigmaHatS(m, l)));
+		}
+		m.majorantSigmaT = maxHat;
+		return m;
+	}
+
+	// Density-grid variant. hDensity scales the elastic and fluorescent coefficients alike;
+	// the majorant carries maxDensity * max(sigma_hat_s, sigma_hat_t) (Mojzik Fig 15 hotfix).
+	inline MediumHWSS MakeHeterogeneousFluorescentMedium(
+		const RGB2SpecTable& table,
+		float3 absorbColorRGB, float absorbScale,
+		float3 scatterColorRGB, float scatterScale,
+		float g,
+		float lamEx, float lamEm, float sigma, float fluorSigmaS, float quantumYield,
+		const float* hDensity, int3 gridRes, float3 gridMin, float3 gridMax) {
+		MediumHWSS m = MakeFluorescentMedium(table, absorbColorRGB, absorbScale, scatterColorRGB,
+											 scatterScale, g, lamEx, lamEm, sigma, fluorSigmaS, quantumYield);
+		float perUnitMajorant = m.majorantSigmaT; // max(sigma_hat_s, sigma_hat_t) over the band at density 1
+
+		size_t voxelCount = (size_t)gridRes.x * gridRes.y * gridRes.z;
+		float maxDensity = 0.f;
+		for (size_t i = 0; i < voxelCount; ++i) maxDensity = fmaxf(maxDensity, hDensity[i]);
+
+		cudaMalloc(&m.d_density, voxelCount * sizeof(float));
+		cudaMemcpy(m.d_density, hDensity, voxelCount * sizeof(float), cudaMemcpyHostToDevice);
+		m.gridRes = gridRes;
+		m.gridMin = gridMin;
+		m.gridMax = gridMax;
+		m.maxDensity = fmaxf(maxDensity, 1e-6f);
+		m.majorantSigmaT = m.maxDensity * perUnitMajorant;
+		return m;
 	}
 }

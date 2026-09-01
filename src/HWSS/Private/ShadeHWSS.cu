@@ -66,6 +66,10 @@ namespace Vera::Spectral::HWSS {
 
 	// Woodcock tracking (Kutz 2017 Alg.4). Shared majorant sample across all lanes;
 	// returns true on real scatter (scatterT set), false on ballistic pass-through.
+	// Uses the fluorescence-aware coefficients (Mojzik Fig 15 hotfix: the majorant must
+	// bound max(sigma_hat_s, sigma_hat_t) - the factory does this). Reduces exactly to the
+	// plain coefficients for a non-fluorescent medium. Routing + wavelength shift happen in
+	// the caller, on a real scatter (mirrors the homogeneous branch).
 	__device__ inline bool HeterogeneousFreeFlight(
 		const MediumHWSS& med, float3 origin, float3 dir, float tMax,
 		const float wl[4], float4& thpt, HybridRNG& rng, float& scatterT) {
@@ -84,8 +88,8 @@ namespace Vera::Spectral::HWSS {
 			float sigmaS[4], sigmaT_[4];
 			float avgS = 0.f, avgN = 0.f;
 			for (int lane = 0; lane < HWSS_LANES; ++lane) {
-				sigmaT_[lane] = EvalSigmaTAt(med, p, wl[lane]);
-				sigmaS[lane] = EvalSigmaSAt(med, p, wl[lane]);
+				sigmaT_[lane] = EvalSigmaHatTAt(med, p, wl[lane]);
+				sigmaS[lane] = EvalSigmaHatSAt(med, p, wl[lane]);
 				float sigmaN = fmaxf(majorant - sigmaT_[lane], 0.f);
 				avgS += fabsf(sigmaS[lane] * (*thptArr[lane]));
 				avgN += fabsf(sigmaN * (*thptArr[lane]));
@@ -112,13 +116,51 @@ namespace Vera::Spectral::HWSS {
 		return false; // safety cap hit -> ballistic pass-through
 	}
 
+	// Normaliser n of the fluorescence-aware free-path density p'(t) = ss*exp(-st*t) on [0,d)
+	// plus a Dirac of mass exp(-d*st) at d (Mojzik 2018 App. A).
+	__host__ __device__ inline float FluorFreePathNorm(float ss, float st, float d) {
+		if (st > 1e-12f) { float E = expf(-d * st); return (ss + (st - ss) * E) / st; }
+		if (ss > 1e-12f) return d * ss + 1.f;
+		return 1.f;
+	}
+
+	// Fluorescence-aware free-path sample (Mojzik 2018 App. A eq 7). The paper body's eq 6/7
+	// print the (ratio - 1) factor as sigma_hat_s/sigma_hat_t; App. A's derivation - the only
+	// form for which P(d-) + Dirac mass = 1 - has it as sigma_hat_t/sigma_hat_s. This uses App. A.
+	// Draws t ~ p'(t)/n; sets `escaped` when the draw lands on the surface (t >= d), returns n.
+	__host__ __device__ inline float SampleFluorFreePath(
+		float ss, float st, float d, float u, bool& escaped, float& nWeight) {
+		if (st > 1e-12f) {
+			float E = expf(-d * st);
+			nWeight = (ss + (st - ss) * E) / st;
+			float D = 1.f + (st / fmaxf(ss, 1e-12f) - 1.f) * E; // = P(d-) denominator
+			float arg = 1.f - u * D;
+			if (arg <= 1e-12f) { escaped = true; return d; }
+			float t = -logf(arg) / st;
+			escaped = (t >= d);
+			return t;
+		}
+		if (ss > 1e-12f) {
+			// clear-but-fluorescent: plain exponential tracking generates zero collisions here.
+			nWeight = d * ss + 1.f;
+			float t = u * nWeight / ss;
+			escaped = (t >= d);
+			return t;
+		}
+		nWeight = 1.f;
+		escaped = true;
+		return d;
+	}
+
 	// Per-lane shadow transmittance. Homogeneous: analytic. Heterogeneous: ratio tracking (Novak 2014).
+	// Uses the fluorescence-aware extinction (energy shed by out-shifting is a real loss along the
+	// shadow ray); EvalSigmaHatT reduces exactly to EvalSigmaT for a non-fluorescent medium.
 	__device__ inline float4 EvalTransmittance(
 		const MediumHWSS& med, float3 origin, float3 dir, float segLength, const float4& wavelengths, HybridRNG& rng) {
 		if (!IsHeterogeneous(med)) {
 			return make_float4(
-				expf(-EvalSigmaT(med, wavelengths.x) * segLength), expf(-EvalSigmaT(med, wavelengths.y) * segLength),
-				expf(-EvalSigmaT(med, wavelengths.z) * segLength), expf(-EvalSigmaT(med, wavelengths.w) * segLength));
+				expf(-EvalSigmaHatT(med, wavelengths.x) * segLength), expf(-EvalSigmaHatT(med, wavelengths.y) * segLength),
+				expf(-EvalSigmaHatT(med, wavelengths.z) * segLength), expf(-EvalSigmaHatT(med, wavelengths.w) * segLength));
 		}
 
 		float majorant = med.majorantSigmaT;
@@ -136,7 +178,7 @@ namespace Vera::Spectral::HWSS {
 
 			float3 p = origin + t * dir;
 			for (int lane = 0; lane < HWSS_LANES; ++lane) {
-				float sigmaTLocal = EvalSigmaTAt(med, p, wl[lane]);
+				float sigmaTLocal = EvalSigmaHatTAt(med, p, wl[lane]);
 				float sigmaN = fmaxf(majorant - sigmaTLocal, 0.f);
 				*trArr[lane] *= sigmaN / majorant;
 			}
@@ -233,6 +275,60 @@ namespace Vera::Spectral::HWSS {
 		nee.y *= FluorEmissionPdf(lo.y, mat.fluorLamEm, mat.fluorSigma, mat.fluorEmNorm) * commonScale * tr.y;
 		nee.z *= FluorEmissionPdf(lo.z, mat.fluorLamEm, mat.fluorSigma, mat.fluorEmNorm) * commonScale * tr.z;
 		nee.w *= FluorEmissionPdf(lo.w, mat.fluorLamEm, mat.fluorSigma, mat.fluorEmNorm) * commonScale * tr.w;
+
+		AccumulateContribution(fb, ray.pixelId, cieTex, ray.m_SensorWavelengths, nee, ray.m_Pdf,
+							   make_float4(1.f, 1.f, 1.f, 1.f));
+	}
+
+	// Fluorescent in-shift NEE at a volume scatter vertex - phase-function analogue of
+	// SampleDirectLightingFluor. The routing probability sigma_si/sigma_hat_s replaces the
+	// surface Lambertian lobe, HGPhaseEval replaces cos/PI. `thpt` is the post-free-flight
+	// throughput (already carries sigma_hat_s), `lo` its pre-shift trace wavelengths. MIS vs
+	// the fluoresced phase continuation (which sets m_BsdfPdf = phasePdf).
+	__device__ inline void SampleVolumeDirectLightingFluor(
+		Core::GeometryBuffers& geom, const LightBVH& lightBvh, const Material* materials,
+		const float3& P, const float3& rayDir, const MediumHWSS& med, const float4& thpt,
+		RayHWSS& ray, HybridRNG& rng, FrameBufferHWSS& fb, cudaTextureObject_t cieTex) {
+		if (lightBvh.lightCount == 0) return;
+
+		LightSample ls = SampleLightBVH(lightBvh, geom, P, rng.nextFloat(), rng.nextFloat(), rng.nextFloat2());
+		if (ls.pdf <= 0.f) return;
+
+		float3 toLight = ls.position - P;
+		float  dist2 = dot(toLight, toLight);
+		float  dist = sqrtf(fmaxf(dist2, 1e-8f));
+		float3 wi = toLight / dist;
+
+		float cosLight = fmaxf(dot(ls.normal, -wi), 0.f);
+		if (cosLight <= 1e-6f) return;
+
+		// Unlike a surface vertex, a volume scatter point can sit arbitrarily close to the
+		// light -> the 1/dist2 solid-angle Jacobian has an (integrable but) exploding MC
+		// variance. Clamp it; the near field is covered by BSDF sampling + the emitter hit.
+		float solidPdf = ls.pdf * fmaxf(dist2, 4e-4f) / cosLight;
+		if (solidPdf <= 0.f) return;
+
+		if (Vera::Core::TraverseAnyHit(geom, P, wi, 1e-4f, dist - 2e-3f)) return;
+
+		float4 tr = EvalTransmittance(med, P, wi, dist - 2e-3f, ray.m_Wavelengths, rng);
+
+		float lamI = SampleFluorExcitation(rng.nextFloat(), med.fluorLamEx, med.fluorSigma,
+										   med.fluorAbsCdfLo, med.fluorAbsCdfHi);
+		const Material& lmat = materials[ls.materialId];
+		float LeI = EvalEmission(lmat, lamI); // emission at the excitation wavelength
+		if (LeI <= 0.f) return;
+
+		// HGPhaseSample convention: cosTheta = dot(wi, wo), wo = -rayDir.
+		float phase = Vera::Core::HGPhaseEval(med.g, dot(wi, -rayDir));
+		float misWeight = PowerHeuristic(solidPdf, phase);
+		float commonScale = misWeight * phase / solidPdf * LeI;
+
+		float4 lo = ray.m_Wavelengths;
+		float4 nee = thpt;
+		nee.x *= (EvalSigmaFluorIn(med, lo.x) / fmaxf(EvalSigmaHatS(med, lo.x), 1e-12f)) * commonScale * tr.x;
+		nee.y *= (EvalSigmaFluorIn(med, lo.y) / fmaxf(EvalSigmaHatS(med, lo.y), 1e-12f)) * commonScale * tr.y;
+		nee.z *= (EvalSigmaFluorIn(med, lo.z) / fmaxf(EvalSigmaHatS(med, lo.z), 1e-12f)) * commonScale * tr.z;
+		nee.w *= (EvalSigmaFluorIn(med, lo.w) / fmaxf(EvalSigmaHatS(med, lo.w), 1e-12f)) * commonScale * tr.w;
 
 		AccumulateContribution(fb, ray.pixelId, cieTex, ray.m_SensorWavelengths, nee, ray.m_Pdf,
 							   make_float4(1.f, 1.f, 1.f, 1.f));
@@ -543,9 +639,32 @@ namespace Vera::Spectral::HWSS {
 
 					if (scattered) {
 						float3 scatterP = ray.m_Origin + scatterT * ray.m_Direction;
+
+						// Fluorescence-aware heterogeneous collision: NEE + per-lane routing +
+						// wavelength shift, mirroring the homogeneous branch. HeterogeneousFreeFlight
+						// already folded sigma_hat_s into thpt via ratio tracking.
+						bool fluorMed = IsFluorescentMedium(med) && !(ray.flags & RAY_FLAG_DISPERSED);
+						if (fluorMed) {
+							SampleVolumeDirectLightingFluor(geom, lightBvh, materials, scatterP,
+															ray.m_Direction, med, thpt, ray, rng, fb, cieTex);
+							float uRoute = rng.nextFloat();
+							for (int lane = 0; lane < HWSS_LANES; ++lane) {
+								float uShift = rng.nextFloat();
+								float sigSi = EvalSigmaFluorInAt(med, scatterP, wl[lane]);
+								float ssHat = EvalSigmaHatSAt(med, scatterP, wl[lane]);
+								if (uRoute < sigSi / fmaxf(ssHat, 1e-12f)) {
+									wl[lane] = SampleFluorExcitation(uShift, med.fluorLamEx, med.fluorSigma,
+																	 med.fluorAbsCdfLo, med.fluorAbsCdfHi);
+									ray.m_LaneFluoresced |= (unsigned char)(1u << lane);
+								}
+							}
+							ray.m_Wavelengths = make_float4(wl[0], wl[1], wl[2], wl[3]);
+						}
+
 						float3 wo = -ray.m_Direction;
 						float phasePdf;
 						float3 wi = Core::HGPhaseSample(med.g, wo, rng.nextFloat2(), phasePdf);
+						if (fluorMed) ray.m_BsdfPdf = phasePdf;
 
 						ray.m_BounceCount += 1;
 						if (!RussianRoulette(thpt, rng, ray.m_BounceCount)) {
@@ -567,6 +686,102 @@ namespace Vera::Spectral::HWSS {
 						// ballistic pass-through: the null-collision weight is the transmittance ratio
 						ray.m_Throughput = thpt;
 					}
+				}
+			} else if (hit.m_Hit && IsFluorescentMedium(med) && !(ray.flags & RAY_FLAG_DISPERSED)) {
+				// Fluorescence-aware distance sampling (Mojzik sec 5): sample proportional to the
+				// aware collision coefficient * transmittance, so collisions land where fluorescence
+				// can occur - including in a medium that is clear to the eye but fluorescent, where
+				// plain -log(u)/sigma_t never collides. Needs a real hit: with sigma_hat_t ~ 0 the
+				// normaliser grows like d*sigma_hat_s, so an escaping ray (d = 1e6) would blow up.
+				float d = tMax;
+				float wl[4] = { ray.m_Wavelengths.x, ray.m_Wavelengths.y, ray.m_Wavelengths.z, ray.m_Wavelengths.w };
+
+				// sigma_hat_s ~ e(lambda) is a narrow gaussian, so a hero-driven distance sample
+				// fireflies when an offset lane sits on the emission peak. Sample from an equal-
+				// weight MIS mixture of the lanes' App. A densities; weight lane k by
+				// f_k(t)/pComb(t), bounded by HWSS_LANES * n_k.
+				float ssL[4], stL[4], nL[4];
+				for (int lane = 0; lane < HWSS_LANES; ++lane) {
+					stL[lane] = EvalSigmaHatT(med, wl[lane]);
+					ssL[lane] = EvalSigmaHatS(med, wl[lane]);
+					nL[lane]  = FluorFreePathNorm(ssL[lane], stL[lane], d);
+				}
+				int   pick = min((int)(rng.nextFloat() * HWSS_LANES), HWSS_LANES - 1);
+				float u = rng.nextFloat();
+				bool  escaped;
+				float nPick; // pComb below uses nL[] instead
+				float sampledDist = SampleFluorFreePath(ssL[pick], stL[pick], d, u, escaped, nPick);
+				(void)nPick;
+
+				// pComb at the drawn point: mean over lanes of f_j/n_j (Dirac mass on escape).
+				float pComb = 0.f;
+				for (int lane = 0; lane < HWSS_LANES; ++lane) {
+					float fj = escaped ? expf(-stL[lane] * d)
+									   : ssL[lane] * expf(-stL[lane] * sampledDist);
+					pComb += fj / fmaxf(nL[lane], 1e-12f);
+				}
+				pComb = fmaxf(pComb / HWSS_LANES, 1e-30f);
+
+				if (!escaped) {
+					float3 scatterP = ray.m_Origin + sampledDist * ray.m_Direction;
+					float4 thpt = ray.m_Throughput;
+					float* thptArr[4] = { &thpt.x, &thpt.y, &thpt.z, &thpt.w };
+
+					// combined collision-term weight f_k(t)/pComb(t); routing sub-pick cancels to 1.
+					for (int lane = 0; lane < HWSS_LANES; ++lane)
+						*thptArr[lane] *= ssL[lane] * expf(-stL[lane] * sampledDist) / pComb;
+
+					// Fluorescent in-shift NEE - uses the post-free-flight throughput and the
+					// pre-shift trace wavelengths, so it must run before the routing loop.
+					SampleVolumeDirectLightingFluor(geom, lightBvh, materials, scatterP,
+													ray.m_Direction, med, thpt, ray, rng, fb, cieTex);
+
+					// Collision routing: split the aware collision coeff per lane into elastic
+					// (sigma_s) vs fluorescent in-shift (sigma_si). One shared routing draw plus
+					// a per-lane excitation draw, both unconditional so the batch stays uniform.
+					float uRoute = rng.nextFloat();
+					for (int lane = 0; lane < HWSS_LANES; ++lane) {
+						float uShift = rng.nextFloat();
+						float sigSi  = EvalSigmaFluorIn(med, wl[lane]);
+						float pFluor = sigSi / fmaxf(ssL[lane], 1e-12f);
+						if (uRoute < pFluor) {
+							// in-shift: the trace wavelength jumps back to the excitation band,
+							// drawn from a(.)/N_a so a(l_i) cancels its own density (weight 1).
+							wl[lane] = SampleFluorExcitation(uShift, med.fluorLamEx, med.fluorSigma,
+															 med.fluorAbsCdfLo, med.fluorAbsCdfHi);
+							ray.m_LaneFluoresced |= (unsigned char)(1u << lane);
+						}
+					}
+
+					// fluorescence is directionally diffuse -> HG phase, shared across lanes.
+					float3 wo = -ray.m_Direction;
+					float phasePdf;
+					float3 wi = Core::HGPhaseSample(med.g, wo, rng.nextFloat2(), phasePdf);
+
+					ray.m_Wavelengths = make_float4(wl[0], wl[1], wl[2], wl[3]);
+					ray.m_BsdfPdf = phasePdf;
+
+					ray.m_BounceCount += 1;
+					if (!RussianRoulette(thpt, rng, ray.m_BounceCount)) {
+						ray.flags |= RAY_FLAG_DEAD;
+						ray.m_RngState = rng.pcg.m_State;
+						StoreRay(coreOut, extOut, idx, ray);
+						return;
+					}
+
+					ray.m_Origin = scatterP;
+					ray.m_Direction = wi;
+					ray.m_Throughput = thpt;
+					ray.flags &= ~RAY_FLAG_DELTA;
+					ray.m_RngState = rng.pcg.m_State;
+					if (ray.m_BounceCount >= maxBounces) ray.flags |= RAY_FLAG_DEAD;
+					StoreRay(coreOut, extOut, idx, ray);
+					return;
+				} else {
+					// escaped to the surface: per-lane Dirac mass / pComb.
+					float* thptArr[4] = { &ray.m_Throughput.x, &ray.m_Throughput.y, &ray.m_Throughput.z, &ray.m_Throughput.w };
+					for (int lane = 0; lane < HWSS_LANES; ++lane)
+						*thptArr[lane] *= expf(-stL[lane] * d) / pComb;
 				}
 			} else {
 				float sigmaTHero = EvalSigmaT(med, ray.m_Wavelengths.x);
