@@ -11,11 +11,9 @@
 #include "FrameBufferHWSS.cuh"
 
 namespace Vera::Spectral::HWSS {
-	// Wavefront dispatch loop: per sample, generates primary rays then ping-pongs
-	// two RayHWSS buffers through traversal + shade for maxBounces iterations,
-	// accumulating spectral contributions into fb as it goes. On return, fb has
-	// been resolved (XYZ -> tonemap -> sRGB) into d_outRGB, a caller-owned device
-	// buffer of camera.m_Width * camera.m_Height float4 entries.
+	// Wavefront loop: per sample, generate primary rays then ping-pong two ray buffers
+	// through traversal + shade for maxBounces, accumulating into fb. On return fb is
+	// resolved (XYZ -> tonemap -> sRGB) into d_outRGB (caller-owned, W*H float4).
 	void RenderHWSS(
 		const Core::GeometryBuffers& geom,
 		const Material* d_materials,
@@ -30,9 +28,7 @@ namespace Vera::Spectral::HWSS {
 		unsigned char defaultMediumIdx = 0,
 		Core::ToneMapper tonemapper = Core::ToneMapper::AgX,
 		float exposure = 1.f,
-		// Hardware-accelerated (OptiX) closest-hit traversal instead of the software
-		// TraversalKernelWavefront -- only has an effect when built with VERA_ENABLE_OPTIX;
-		// silently ignored (falls back to the software path) otherwise. Everything else about
-		// the pipeline (shading, NEE shadow rays, compaction, material sort) is unchanged.
+		// OptiX closest-hit traversal instead of the software kernel; only effective when
+		// built with VERA_ENABLE_OPTIX, otherwise silently falls back.
 		bool useOptix = false);
 }

@@ -3,7 +3,7 @@
 #include <cmath>
 
 namespace Vera::Core {
-	// Raw: identity, no clamp — resolve keeps unbounded linear radiance (for HDR
+	// Raw: identity, no clamp - resolve keeps unbounded linear radiance (for HDR
 	// output / renderer comparisons). Linear: clamped to [0,1] for display.
 	enum class ToneMapper { Reinhard, ACES, AgX, Linear, Raw };
 
@@ -12,8 +12,8 @@ namespace Vera::Core {
 		return { c.x / (1.f + c.x), c.y / (1.f + c.y), c.z / (1.f + c.z) };
 	}
 
-	//  ACES — full RRT + sRGB ODT (Stephen Hill, fitted to Academy reference)
-	// Input/output matrices: linear sRGB ↔ AP1-like working space used by RRT fit.
+	//  ACES - full RRT + sRGB ODT (Stephen Hill, fitted to Academy reference)
+	// Input/output matrices: linear sRGB <-> AP1-like working space used by RRT fit.
 	__host__ __device__ static inline float3 acesIn(float3 v) {
 		return {
 			v.x * 0.59719f + v.y * 0.35458f + v.z * 0.04823f,
@@ -53,7 +53,7 @@ namespace Vera::Core {
 		};
 	}
 
-	//  AgX — Troy Sobotka's transform (Blender reference matrices)
+	//  AgX - Troy Sobotka's transform (Blender reference matrices)
 	__host__ __device__ static inline float agxSigmoid(float x) {
 		float x2 = x * x;
 		float x4 = x2 * x2;

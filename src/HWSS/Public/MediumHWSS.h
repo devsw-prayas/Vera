@@ -6,18 +6,9 @@
 #include "RGB2Spec.h"
 
 namespace Vera::Spectral::HWSS {
-	// Participating medium, spectral. Coefficients are physical (not bounded to [0,1]), so —
-	// unlike Material's reflectance — they're baked as a normalized spectral *shape* (RGB2Spec,
-	// in [0,1]) times a separate positive scale, the same pattern used for
-	// Material::emissiveScale and EnvMapHWSS::intensity.
-	//
-	// Heterogeneous media are an additive extension: d_density == nullptr keeps every existing
-	// call site's behavior byte-identical (homogeneous, spatially constant), matching this
-	// session's established pattern for backward-compatible extension points (e.g.
-	// mat.roughness <= 0 gating smooth vs. rough Dielectric). When set, d_density is a dense
-	// trilinearly-interpolated grid that multiplies the medium's spectral shape — the standard
-	// "homogeneous spectral shape x spatially-varying density" decomposition used for smoke/fog,
-	// which avoids needing per-voxel spectral data.
+	// Spectral participating medium. Coefficients are physical (unbounded), stored as a
+	// normalized RGB2Spec shape times a positive scale. d_density == nullptr => homogeneous
+	// (existing behaviour); when set it's a trilinear density grid multiplying the shape.
 	struct MediumHWSS final {
 		RGBSigmoidPolynomial sigmaAShape;
 		float                sigmaAScale = 0.f; // absorption coefficient magnitude
@@ -25,17 +16,13 @@ namespace Vera::Spectral::HWSS {
 		float                sigmaSScale = 0.f; // scattering coefficient magnitude
 		float                g = 0.f;           // Henyey-Greenstein anisotropy [-1,1]
 
-		// ── Heterogeneous extension (nullptr => homogeneous, existing behavior) ──
-		float*   d_density  = nullptr; // dense grid, gridRes.x*gridRes.y*gridRes.z floats, row-major x-fastest
-		int3     gridRes    = {0, 0, 0};
-		float3   gridMin    = {0.f, 0.f, 0.f}; // world-space bounds the grid maps onto
-		float3   gridMax    = {0.f, 0.f, 0.f};
-		float    maxDensity = 1.f;  // precomputed max over the whole grid, for the majorant
-		// Precomputed Woodcock/spectral-tracking majorant: an upper bound on sigmaT(x,lambda) for
-		// EVERY position x and EVERY visible wavelength simultaneously. RGB2SpecLookup's sigmoid
-		// polynomials are always <= 1 (they represent [0,1] reflectance-like shapes), so
-		// sigmaAScale+sigmaSScale alone already bounds the spectral factor; multiplying by
-		// maxDensity bounds the spatial factor too.
+		// Heterogeneous extension (nullptr => homogeneous):
+		float* d_density = nullptr; // dense grid, gridRes.x*gridRes.y*gridRes.z floats, x-fastest
+		int3     gridRes = { 0, 0, 0 };
+		float3   gridMin = { 0.f, 0.f, 0.f }; // world-space bounds the grid maps onto
+		float3   gridMax = { 0.f, 0.f, 0.f };
+		float    maxDensity = 1.f;
+		// Woodcock majorant: bounds sigmaT(x,lambda) for every position and visible wavelength.
 		float    majorantSigmaT = 0.f;
 	};
 
@@ -74,20 +61,20 @@ namespace Vera::Spectral::HWSS {
 			y = max(0, min(y, m.gridRes.y - 1));
 			z = max(0, min(z, m.gridRes.z - 1));
 			return m.d_density[(z * m.gridRes.y + y) * m.gridRes.x + x];
-		};
+			};
 
-		float c00 = sample(x0, y0, z0)     * (1 - fx) + sample(x0 + 1, y0, z0)     * fx;
+		float c00 = sample(x0, y0, z0) * (1 - fx) + sample(x0 + 1, y0, z0) * fx;
 		float c10 = sample(x0, y0 + 1, z0) * (1 - fx) + sample(x0 + 1, y0 + 1, z0) * fx;
-		float c01 = sample(x0, y0, z0 + 1)     * (1 - fx) + sample(x0 + 1, y0, z0 + 1)     * fx;
+		float c01 = sample(x0, y0, z0 + 1) * (1 - fx) + sample(x0 + 1, y0, z0 + 1) * fx;
 		float c11 = sample(x0, y0 + 1, z0 + 1) * (1 - fx) + sample(x0 + 1, y0 + 1, z0 + 1) * fx;
-		float c0  = c00 * (1 - fy) + c10 * fy;
-		float c1  = c01 * (1 - fy) + c11 * fy;
+		float c0 = c00 * (1 - fy) + c10 * fy;
+		float c1 = c01 * (1 - fy) + c11 * fy;
 		return c0 * (1 - fz) + c1 * fz;
 	}
 
-	// Local (position-dependent) sigma_a/sigma_s/sigma_t: density(x) * homogeneous coefficient.
-	// For a homogeneous medium (IsHeterogeneous == false) density is implicitly 1 everywhere, so
-	// these reduce exactly to EvalSigmaA/S/T -- callers can use these unconditionally.
+	// Position-dependent coefficients: density(x) * homogeneous coefficient. Homogeneous
+	// media have density 1 everywhere, so these reduce to EvalSigmaA/S/T and are safe to
+	// call unconditionally.
 	__device__ inline float EvalSigmaAAt(const MediumHWSS& m, float3 p, float lambda) {
 		float density = IsHeterogeneous(m) ? EvalDensity(m, p) : 1.f;
 		return density * EvalSigmaA(m, lambda);
@@ -106,8 +93,7 @@ namespace Vera::Spectral::HWSS {
 		const RGB2SpecTable& table,
 		float3 absorbColorRGB, float absorbScale,
 		float3 scatterColorRGB, float scatterScale,
-		float g)
-	{
+		float g) {
 		MediumHWSS m{};
 		m.sigmaAShape = RGB2SpecLookup(table, absorbColorRGB);
 		m.sigmaAScale = absorbScale;
@@ -118,16 +104,14 @@ namespace Vera::Spectral::HWSS {
 		return m;
 	}
 
-	// hDensity: host-side dense grid, gridRes.x*gridRes.y*gridRes.z floats, row-major x-fastest,
-	// values >= 0 (a multiplier on the homogeneous spectral coefficients -- 1.0 means "as dense
-	// as the base medium", not a physical density unit).
+	// hDensity: host grid, gridRes.x*gridRes.y*gridRes.z floats, x-fastest, values >= 0
+	// (a multiplier on the base coefficients; 1.0 == as dense as the base medium).
 	inline MediumHWSS MakeHeterogeneousMedium(
 		const RGB2SpecTable& table,
 		float3 absorbColorRGB, float absorbScale,
 		float3 scatterColorRGB, float scatterScale,
 		float g,
-		const float* hDensity, int3 gridRes, float3 gridMin, float3 gridMax)
-	{
+		const float* hDensity, int3 gridRes, float3 gridMin, float3 gridMax) {
 		MediumHWSS m = MakeMedium(table, absorbColorRGB, absorbScale, scatterColorRGB, scatterScale, g);
 
 		size_t voxelCount = (size_t)gridRes.x * gridRes.y * gridRes.z;
@@ -136,9 +120,9 @@ namespace Vera::Spectral::HWSS {
 
 		cudaMalloc(&m.d_density, voxelCount * sizeof(float));
 		cudaMemcpy(m.d_density, hDensity, voxelCount * sizeof(float), cudaMemcpyHostToDevice);
-		m.gridRes    = gridRes;
-		m.gridMin    = gridMin;
-		m.gridMax    = gridMax;
+		m.gridRes = gridRes;
+		m.gridMin = gridMin;
+		m.gridMax = gridMax;
 		m.maxDensity = fmaxf(maxDensity, 1e-6f);
 		m.majorantSigmaT = m.maxDensity * (absorbScale + scatterScale);
 		return m;

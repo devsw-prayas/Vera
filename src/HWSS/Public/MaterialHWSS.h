@@ -14,45 +14,30 @@ namespace Vera::Spectral::HWSS {
 		Dielectric,
 	};
 
-	// Spectral material. Reflectance/emission color is stored as sigmoid-polynomial
-	// coefficients (Jakob & Hanika 2019) baked once on the host from an artist RGB
-	// value via RGB2SpecLookup — evaluating a material at a sampled wavelength is
-	// then just RGBSigmoidPolynomial::operator()(lambda), cheap enough per-sample.
-	//
-	// GGX conductors are Schlick-only in this model: exact complex-IOR conductor
-	// Fresnel would need real measured spectral eta/kappa curves per metal, which
-	// RGB2Spec (designed for [0,1] reflectance) can't represent, so F0 is baked
-	// the same way as Lambertian albedo instead.
-	//
-	// Dielectric dispersion is optional: sellB1 == 0 && sellB2 == 0 means a constant IOR
-	// (mat.ior); nonzero Sellmeier coefficients enable wavelength-dependent IOR via the
-	// 2-term Sellmeier equation (see EvalIOR) for chromatic dispersion (e.g. prism/glass
-	// fringing, diamond fire). 2-term beats a Cauchy fit strictly (measured against real
-	// 3-term glass/diamond Sellmeier ground truth over 380-700nm) for the same handful of
-	// extra coefficients, and — since MaterialSortHWSS groups shading by material id — the
-	// extra divisions are warp-uniform within a batch, not a per-lane divergence cost.
+	// Spectral material. Albedo/emission stored as sigmoid-polynomial coefficients (Jakob & Hanika 2019).
+	// GGX: Schlick F0 only (RGB2Spec can't hold complex eta/kappa).
+	// Dielectric: zero Sellmeier coefficients => constant IOR, nonzero => 2-term Sellmeier.
 	struct Material final {
-		RGBSigmoidPolynomial albedoSpec;   // Lambertian reflectance / GGX Schlick F0 / Emissive base color
-		float                emissiveScale = 0.f; // Emissive: radiance multiplier; unused otherwise
-		float                roughness     = 0.f;
-		float                ior           = 1.5f; // Dielectric IOR when dispersion is disabled
-		float                sellB1        = 0.f;  // Sellmeier term 1 coefficient; 0 = achromatic
-		float                sellC1        = 0.f;  // Sellmeier term 1 resonance (um^2)
-		float                sellB2        = 0.f;  // Sellmeier term 2 coefficient
-		float                sellC2        = 0.f;  // Sellmeier term 2 resonance (um^2)
-		// ── Rank-1 fluorophore (see FluorescenceHWSS.h), optional. fluorQY == 0 means
-		// inert: a pure elastic Lambertian. Stokes: fluorLamEm > fluorLamEx.
-		float                fluorLamEx    = 0.f;  // absorption Gaussian centre [nm]
-		float                fluorLamEm    = 0.f;  // emission Gaussian centre [nm]
-		float                fluorSigma    = 0.f;  // shared linewidth [nm]
-		float                fluorQY       = 0.f;  // quantum yield [0,1]; 0 disables fluorescence
-		float                fluorEmNorm   = 1.f;  // host-precomputed emission normalisation
-		float                fluorAbsCdfLo = 0.f;  // host-precomputed excitation sampling constants
+		RGBSigmoidPolynomial albedoSpec;   // Lambertian reflectance / GGX F0 / Emissive color
+		float                emissiveScale = 0.f;
+		float                roughness = 0.f;
+		float                ior = 1.5f;
+		float                sellB1 = 0.f;  // Sellmeier B1; 0 = achromatic
+		float                sellC1 = 0.f;  // Sellmeier C1 (um^2)
+		float                sellB2 = 0.f;
+		float                sellC2 = 0.f;
+		// rank-1 fluorophore; fluorQY == 0 means inert. Stokes: fluorLamEm > fluorLamEx.
+		float                fluorLamEx = 0.f;
+		float                fluorLamEm = 0.f;
+		float                fluorSigma = 0.f;
+		float                fluorQY = 0.f;
+		float                fluorEmNorm = 1.f;  // precomputed emission normalisation
+		float                fluorAbsCdfLo = 0.f;  // precomputed excitation sampling bounds
 		float                fluorAbsCdfHi = 1.f;
-		float                fluorAbsNorm  = 1.f;
-		MaterialType         type          = MaterialType::Lambertian;
-		uint8_t              mediumIdx     = 0;    // Dielectric interior medium (1-indexed, 0 = vacuum)
-		uint8_t              pad[2]        = {};
+		float                fluorAbsNorm = 1.f;
+		MaterialType         type = MaterialType::Lambertian;
+		uint8_t              mediumIdx = 0;    // interior medium index (0 = vacuum)
+		uint8_t              pad[2] = {};
 	};
 
 	__host__ __device__ inline float EvalReflectance(const Material& mat, float lambda) {
@@ -80,7 +65,7 @@ namespace Vera::Spectral::HWSS {
 		return sqrtf(fmaxf(n2, 1e-6f));
 	}
 
-	// ── Host-side factories: bake an artist RGB color into spectral coefficients ──
+	// host-side factories: bake RGB -> spectral coefficients
 
 	inline Material MakeLambertian(const RGB2SpecTable& table, float3 albedoRGB) {
 		Material m{};
@@ -110,8 +95,7 @@ namespace Vera::Spectral::HWSS {
 	// (Peter 1923): B1=4.3356 C1=0.1060^2 B2=0.3306 C2=0.1750^2.
 	inline Material MakeDispersiveDielectric(
 		float sellB1, float sellC1, float sellB2, float sellC2,
-		float roughness, uint8_t mediumIdx = 0)
-	{
+		float roughness, uint8_t mediumIdx = 0) {
 		Material m{};
 		m.type = MaterialType::Dielectric;
 		m.sellB1 = sellB1; m.sellC1 = sellC1;
@@ -121,24 +105,19 @@ namespace Vera::Spectral::HWSS {
 		return m;
 	}
 
-	// Diffuse Lambertian surface that is also a rank-1 fluorophore: reflects
-	// elastically with `albedoRGB` and, in parallel, absorbs around lamEx and
-	// re-emits diffusely around lamEm with the given quantum yield (real
-	// fluorescent paint is both at once). Caller should keep peak reflectance +
-	// quantumYield below 1 for energy conservation.
+	// Elastic Lambertian + rank-1 fluorophore. Keep peak_reflectance + QY < 1 for energy conservation.
 	inline Material MakeFluorescentLambertian(
 		const RGB2SpecTable& table, float3 albedoRGB,
-		float lamEx, float lamEm, float sigma, float quantumYield)
-	{
+		float lamEx, float lamEm, float sigma, float quantumYield) {
 		Material m = MakeLambertian(table, albedoRGB);
-		m.fluorLamEx  = lamEx;
-		m.fluorLamEm  = lamEm;
-		m.fluorSigma  = sigma;
-		m.fluorQY     = quantumYield;
+		m.fluorLamEx = lamEx;
+		m.fluorLamEm = lamEm;
+		m.fluorSigma = sigma;
+		m.fluorQY = quantumYield;
 		m.fluorEmNorm = FluorEmissionNorm(lamEm, sigma);
 		m.fluorAbsCdfLo = FluorAbsCdfLo(lamEx, sigma);
 		m.fluorAbsCdfHi = FluorAbsCdfHi(lamEx, sigma);
-		m.fluorAbsNorm  = FluorAbsNorm(lamEx, sigma);
+		m.fluorAbsNorm = FluorAbsNorm(lamEx, sigma);
 		return m;
 	}
 

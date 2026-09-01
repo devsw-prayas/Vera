@@ -1,12 +1,7 @@
-// OptiX device programs for the hardware-accelerated traversal pathway. Compiled to PTX only
-// (see CMakeLists.txt's VeraOptixPTX custom command) and loaded at runtime by
-// OptixTraversal.cpp's optixModuleCreate -- never part of the main -rdc=true device-link unit
-// the rest of Vera's wavefront kernels live in.
-//
-// Each program writes/reads params.hits[idx] directly by re-deriving idx from
-// optixGetLaunchIndex() rather than round-tripping through optixTrace payload registers --
-// simpler, and there's no cross-program state to pass here since every program already knows
-// which ray it's handling.
+// OptiX device programs for the hardware traversal pathway. Compiled to PTX only and
+// loaded at runtime by OptixTraversal.cpp - not part of the main device-link unit. Each
+// program re-derives idx from optixGetLaunchIndex() and writes params.hits[idx] directly,
+// no optixTrace payload round-trip.
 #include <optix.h>
 #include <cfloat>
 
@@ -20,9 +15,8 @@ extern "C" __global__ void __raygen__vera()
 {
 	const uint32_t idx = optixGetLaunchIndex().x;
 
-	// Defensive parity with TraversalKernelWavefront's dead-ray check (Traversal.cu) -- in the
-	// current pipeline this is always false here since RayCompactor already removes dead rays
-	// between bounces, but costs nothing to keep symmetric with the software path.
+	// Parity with the software path's dead-ray check; always false in the current pipeline
+	// (RayCompactor removes dead rays between bounces).
 	if (params.rayFlags[idx] & Vera::Spectral::HWSS::RAY_FLAG_DEAD) {
 		params.hits[idx].m_Hit = false;
 		params.hits[idx].t     = FLT_MAX;

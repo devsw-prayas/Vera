@@ -14,7 +14,7 @@ namespace Vera::Spectral::HWSS {
 	// Scatters each ray at its hit (or accumulates env/emissive contribution and
 	// kills it on miss/light hit), writing the next bounce's ray into raysOut.
 	// Per-lane m_Pdf is the wavelength-sampling pdf (fixed at ray-gen, zeroed on
-	// dispersion collapse) — only used to weight framebuffer contributions.
+	// dispersion collapse) - only used to weight framebuffer contributions.
 	// Per-lane m_Throughput accumulates f*cosTheta/pdfDirectional every bounce,
 	// where pdfDirectional is the single shared scatter-direction pdf (BSDF
 	// sampling doesn't fork per lane, except once RAY_FLAG_DISPERSED collapses
@@ -22,7 +22,7 @@ namespace Vera::Spectral::HWSS {
 	//
 	// NEE (next-event estimation) fires on Lambertian and GGX hits, sampling
 	// LightBVH area lights directly (Dielectric still skips NEE and is treated
-	// as delta — no BSDF *eval* was written for it, only sample). The NEE contribution and any
+	// as delta - no BSDF *eval* was written for it, only sample). The NEE contribution and any
 	// BSDF-sampled ray that later lands on the same light are combined via
 	// power-heuristic MIS (RayHWSS::m_BsdfPdf carries the sampling pdf forward;
 	// EmissiveHitPdf recovers the light strategy's pdf for the hit direction).

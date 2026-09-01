@@ -1,15 +1,6 @@
-"""Procedural triangle-mesh generators for the standard shapes.
-
-Each returns ``(vertices, faces, normals)``:
-  * ``vertices`` : (N, 3) float32
-  * ``faces``    : (M, 3) uint32  — indices into ``vertices``, wound CCW as seen
-                   from outside / from the +normal side
-  * ``normals``  : (N, 3) float32 smooth per-vertex normals for curved surfaces,
-                   or ``None`` for flat shapes (the renderer then uses geometric
-                   face normals)
-
-Feed straight into ``vera.Scene.add_mesh(vertices, faces, material, normals)``,
-or use the ``vera.Scene.add_*`` convenience methods which call these for you.
+"""Procedural mesh generators. Each returns (vertices (N,3) f32, faces (M,3) u32,
+normals (N,3) f32 or None for flat shapes) - feed to Scene.add_mesh, or use the
+Scene.add_* helpers.
 """
 from __future__ import annotations
 

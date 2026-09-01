@@ -7,16 +7,11 @@
 #include <cmath>
 #include <vector>
 
-// Minimal Radiance RGBE (.hdr / .pic) image loader — enough to read the
-// equirectangular HDRIs used as environment maps (e.g. Poly Haven .hdr).
-// Handles the "new" per-channel RLE scanline encoding and the flat/uncompressed
-// fallback; old-style (1,1,1,n) run markers are not supported (Poly Haven and
-// every modern exporter write new-RLE). No gamma/exposure application beyond the
-// RGBE mantissa/exponent decode — the caller gets linear radiance.
+// Radiance RGBE (.hdr) loader for equirectangular env maps.
+// Handles new-style per-channel RLE and flat fallback. Output is linear.
 namespace Vera::Core {
-
 	struct HdrImage final {
-		int                 width  = 0;
+		int                 width = 0;
 		int                 height = 0;
 		std::vector<float3>  pixels;              // row-major, top row first
 		bool ok() const { return width > 0 && height > 0 && (int)pixels.size() == width * height; }
@@ -37,17 +32,17 @@ namespace Vera::Core {
 		FILE* f = fopen(path, "rb");
 		if (!f) { fprintf(stderr, "LoadHdr: cannot open '%s'\n", path); return img; }
 
-		// ── ASCII header ──────────────────────────────────────────────────────
+		// -- ASCII header ------------------------------------------------------
 		char line[512];
 		bool sawMagic = false;
 		while (fgets(line, sizeof(line), f)) {
 			if (line[0] == '\n') break;                       // blank line ends the header
 			if (strncmp(line, "#?", 2) == 0) sawMagic = true; // #?RADIANCE / #?RGBE
-			// FORMAT / EXPOSURE / GAMMA lines are ignored — we only decode 32-bit_rle_rgbe.
+			// FORMAT / EXPOSURE / GAMMA lines are ignored - we only decode 32-bit_rle_rgbe.
 		}
 		if (!sawMagic) { fprintf(stderr, "LoadHdr: '%s' is not a Radiance file\n", path); fclose(f); return img; }
 
-		// ── Resolution line: expect "-Y <h> +X <w>" (the standard orientation) ──
+		// -- Resolution line: expect "-Y <h> +X <w>" (the standard orientation) --
 		if (!fgets(line, sizeof(line), f)) { fclose(f); return img; }
 		int w = 0, h = 0;
 		if (sscanf(line, "-Y %d +X %d", &h, &w) != 2 || w <= 0 || h <= 0) {

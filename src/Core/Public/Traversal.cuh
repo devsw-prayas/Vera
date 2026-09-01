@@ -8,7 +8,7 @@
 
 namespace Vera::Core {
 	// Shared BVH-walk primitives: decoupled from any ray representation.
-	// Both functions operate on raw origin/direction/tmin/tmax — no Ray or RayHWSS.
+	// Both functions operate on raw origin/direction/tmin/tmax - no Ray or RayHWSS.
 
 	// Full closest-hit TLAS->BLAS walk. Returns the nearest intersection found
 	// (or h.m_Hit==false if none within [tmin, tmax]).
@@ -24,7 +24,7 @@ namespace Vera::Core {
 		float3 origin, float3 direction,
 		float tmin, float tmax);
 
-	// Wavefront kernel: thin wrapper — checks RAY_FLAG_DEAD, then delegates
+	// Wavefront kernel: thin wrapper - checks RAY_FLAG_DEAD, then delegates
 	// to TraverseClosestHit.  HWSS-specific because it knows about RayHWSS.
 	__global__ void TraversalKernelWavefront(
 		GeometryBuffers geom,

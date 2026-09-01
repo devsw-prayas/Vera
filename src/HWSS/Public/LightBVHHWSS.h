@@ -37,12 +37,12 @@ namespace Vera::Spectral::HWSS {
 	};
 
 	struct LightBVH {
-		LightBVHNode* nodes          = nullptr;
-		uint32_t      nodeCount      = 0;
-		LightEntry*   lights         = nullptr;
-		uint32_t      lightCount     = 0;
-		float*        triAreaCDF     = nullptr;
-		uint32_t*     primToLight    = nullptr; // primToLight[globalPrimIdx] = lightIdx, 0xFFFFFFFF if not a light
+		LightBVHNode* nodes = nullptr;
+		uint32_t      nodeCount = 0;
+		LightEntry* lights = nullptr;
+		uint32_t      lightCount = 0;
+		float* triAreaCDF = nullptr;
+		uint32_t* primToLight = nullptr; // primToLight[globalPrimIdx] = lightIdx, 0xFFFFFFFF if not a light
 		uint32_t      totalPrimCount = 0;
 	};
 }

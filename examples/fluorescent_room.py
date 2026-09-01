@@ -1,7 +1,7 @@
 """Visual check for the rank-1 fluorescent Lambertian (Mojzik et al. 2018).
 
 An enclosed room with a violet/near-UV ceiling light. The LEFT sphere is a
-fluorophore that absorbs around 400 nm and re-emits (diffusely) around 520 nm —
+fluorophore that absorbs around 400 nm and re-emits (diffusely) around 520 nm -
 a green Stokes glow that should read clearly against the dim violet-lit walls,
 with no colour cast once converged. The RIGHT sphere is the same grey Lambertian
 with fluorescence off, for reference.

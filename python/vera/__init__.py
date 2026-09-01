@@ -1,24 +1,9 @@
-"""Vera — experimental spectral path tracer.
+"""Vera - Python frontend over the CUDA spectral path tracer.
 
-Thin Python frontend over the CUDA renderer. Build the native extension `_vera`
-from the repo-root CMakeLists with -DVERA_BUILD_PYTHON=ON.
-
-    import vera
-
-    scene = vera.Scene()
-    floor  = scene.add_material(vera.lambertian([0.6, 0.6, 0.6]))
-    light  = scene.add_material(vera.emissive([1, 0.95, 0.9], 12.0))
-    glass  = scene.add_material(vera.dispersive_dielectric(
-                 4.3356, 0.1060**2, 0.3306, 0.1750**2))
-
-    scene.add_box_walls(floor, light, floor, floor, floor, scale=1.0)
-    scene.add_uv_sphere(glass, radius=0.4, center=[0.0, -0.6, 0.0])
-    scene.add_box(floor, size=[0.6, 0.3, 0.6], center=[-0.5, -0.85, 0.2])
-
-    cam = vera.camera_look_at(eye=[0, 0, 3.3], target=[0, -0.3, 0],
-                              fov_y_deg=42, width=800, height=600)
-    img = vera.render(scene, cam, spp=256)          # (H, W, 3) float32, tonemapped
-    hdr = vera.render_hdr(scene, cam, spp=256)      # (H, W, 3) float32, unclamped
+Build the `_vera` extension from the repo-root CMakeLists with
+-DVERA_BUILD_PYTHON=ON. Usage: build a `Scene`, make a camera with
+`camera_look_at`, then `render` (tonemapped), `render_hdr` (linear), or
+`render_xyz` (raw CIE XYZ).
 """
 from __future__ import annotations
 
@@ -55,11 +40,8 @@ __all__ = [
 
 
 class Scene:
-    """Imperative scene builder. Wraps the native `_vera.Scene`; adds the
-    procedural shape helpers (see `vera.shapes`). Every native method
-    (`add_material`, `add_quad`, `add_sphere`, `add_diamond`, `add_box_walls`,
-    `add_mesh`, `set_env_constant`, `set_env_hdri`, `build`, `triangle_count`, …)
-    is forwarded unchanged."""
+    """Scene builder. Wraps `_vera.Scene` (all native methods forwarded) and adds
+    the `add_plane/box/disk/cylinder/cone/uv_sphere` helpers from `vera.shapes`."""
 
     def __init__(self):
         self._s = _Scene()
@@ -70,7 +52,7 @@ class Scene:
     def __repr__(self):
         return repr(self._s).replace("<vera.Scene", "<vera.Scene(py)")
 
-    # ── standard shapes ─────────────────────────────────────────────────
+    # -- standard shapes -------------------------------------------------
     def _mesh(self, gen_out, material):
         v, f, n = gen_out
         self._s.add_mesh(v, f, material, n)
@@ -107,16 +89,16 @@ def render(scene, camera, *, spp=256, max_bounces=32, tonemap="aces",
 
 
 def render_hdr(scene, camera, *, spp=256, max_bounces=32, exposure=1.0, use_optix=False):
-    """Render with no tonemap/clamp — (H, W, 3) float32 of raw linear radiance."""
+    """Render with no tonemap/clamp - (H, W, 3) float32 of raw linear radiance."""
     return _render(_unwrap(scene), camera, spp, max_bounces, "raw", exposure, use_optix)
 
 
 def render_xyz(scene, camera, *, spp=256, max_bounces=32, use_optix=False):
-    """Raw per-pixel CIE XYZ radiance — (H, W, 3) float32, no tonemap/exposure/sRGB.
+    """Raw per-pixel CIE XYZ radiance, (H, W, 3) float32 - no tonemap/exposure/sRGB.
 
-    This is the space the renderer accumulates in; use it for spectral-oracle
-    cross-checks (project a reference L(lambda) through the analytic CIE fit in
-    src/HWSS/Public/CIE.h and compare directly)."""
+    The space the renderer accumulates in, so the fluorescence tests compare it
+    directly against the DBR oracle's spectral radiance.
+    """
     return _render_xyz(_unwrap(scene), camera, spp, max_bounces, use_optix)
 
 

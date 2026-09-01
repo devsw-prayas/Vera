@@ -20,7 +20,6 @@
 // fluorescent channel is inert and the surface is a plain Lambertian.
 
 namespace Vera::Spectral::HWSS {
-
 	__host__ __device__ inline float FluorAbsorptionRaw(float lambda, float lamEx, float sigma) {
 		float t = (lambda - lamEx) / sigma;
 		return expf(-0.5f * t * t);
@@ -40,7 +39,7 @@ namespace Vera::Spectral::HWSS {
 	// (mirrors CIE_Y_Integral in CIE.h).
 	inline float FluorEmissionNorm(float lamEm, float sigma, int steps = 601) {
 		float step = LAMBDA_RANGE / (steps - 1);
-		float sum  = 0.f;
+		float sum = 0.f;
 		for (int i = 0; i < steps; ++i) {
 			float l = LAMBDA_MIN + i * step;
 			float w = (i == 0 || i == steps - 1) ? 0.5f : 1.f;
@@ -52,13 +51,13 @@ namespace Vera::Spectral::HWSS {
 	// a(l) is sampled by inverse-CDF as a Gaussian truncated to [LAMBDA_MIN,
 	// LAMBDA_MAX]. cdfLo/cdfHi remap a uniform draw into that range; N_a is the
 	// truncated integral of a(l). Because the sampling density is a(l)/N_a, a(l)
-	// cancels in every estimator that divides Phi by it — no per-sample variance
+	// cancels in every estimator that divides Phi by it - no per-sample variance
 	// from where in the absorption band the draw landed, and no wasted
 	// near-zero-weight samples the way uniform sampling would give.
 	inline float StdNormalCdf(float x) { return 0.5f * erfcf(-x * 0.70710678118654752f); }
 	inline float FluorAbsCdfLo(float lamEx, float sigma) { return StdNormalCdf((LAMBDA_MIN - lamEx) / sigma); }
 	inline float FluorAbsCdfHi(float lamEx, float sigma) { return StdNormalCdf((LAMBDA_MAX - lamEx) / sigma); }
-	inline float FluorAbsNorm (float lamEx, float sigma) {
+	inline float FluorAbsNorm(float lamEx, float sigma) {
 		return sigma * 2.50662827463100050f * (FluorAbsCdfHi(lamEx, sigma) - FluorAbsCdfLo(lamEx, sigma));
 	}
 
@@ -72,11 +71,10 @@ namespace Vera::Spectral::HWSS {
 	// Probability of routing a lane through the fluorescent channel, proportional
 	// to the emission profile at that lane's SENSOR wavelength (where its energy
 	// is destined to land, not its current trace wavelength). Near 0 outside the
-	// emission band, so out-of-band lanes — and every lane on a non-fluorescent
-	// material — always take the elastic channel, unchanged from the plain path.
+	// emission band, so out-of-band lanes - and every lane on a non-fluorescent
+	// material - always take the elastic channel, unchanged from the plain path.
 	__host__ __device__ inline float FluorRoutingProb(
-		float lambdaSensor, float lamEm, float sigma, float pMax = 0.9f)
-	{
+		float lambdaSensor, float lamEm, float sigma, float pMax = 0.9f) {
 		return FluorEmissionRaw(lambdaSensor, lamEm, sigma) * pMax;
 	}
 }

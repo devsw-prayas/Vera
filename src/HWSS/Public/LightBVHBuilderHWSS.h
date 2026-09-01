@@ -4,7 +4,7 @@
 
 namespace Vera::Spectral::HWSS {
 	LightBVH BuildLightBVH(
-		const float3*   hostVertices,
+		const float3* hostVertices,
 		const uint32_t* hostIndices,
 		const uint16_t* hostTriMatIDs,
 		uint32_t        totalTriCount,

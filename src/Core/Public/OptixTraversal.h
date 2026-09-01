@@ -9,32 +9,25 @@
 #include "RayHWSS.h"
 
 namespace Vera::Core {
-	// Shared between host (OptixTraversal.cpp) and device (OptixPrograms.cu) code -- must stay
-	// layout-identical on both sides, exactly like every other kernel-launch-params struct in
-	// this codebase (e.g. FrameBufferHWSS, GeometryBuffers).
-	//
-	// Fields are unpacked from RayCoreSoA rather than embedding it directly: RayCoreSoA's
-	// pointer members carry in-class default initializers (`= nullptr`), which makes the type
-	// non-trivially-default-constructible -- and nvcc rejects any such type for a __constant__
-	// global variable ("dynamic initialization is not supported"), which is exactly how
-	// OptixPrograms.cu's `params` needs to be declared.
+	// Shared host/device launch params - must stay layout-identical on both sides. Fields
+	// are unpacked from RayCoreSoA rather than embedded because RayCoreSoA's `= nullptr`
+	// member initializers make it non-trivially-constructible, which nvcc rejects for the
+	// __constant__ `params` in OptixPrograms.cu.
 	struct OptixTraversalParams {
-		float3*                 rayOrigin;
-		float3*                 rayDirection;
-		unsigned char*          rayFlags;
-		WavefrontHitRecord*     hits;
+		float3* rayOrigin;
+		float3* rayDirection;
+		unsigned char* rayFlags;
+		WavefrontHitRecord* hits;
 		OptixTraversableHandle  handle;
 	};
 
-	// Host-side OptiX state: context, module, program groups, pipeline, SBT, GAS/IAS device
-	// buffers, and the device-side launch-params buffer. Built once per render
-	// (InitOptixTraversal), reused every bounce (LaunchOptixTraversal), freed once
-	// (DestroyOptixTraversal) -- mirrors RayCompactor/MaterialSorter's Init/.../Destroy shape.
+	// Host-side OptiX state. Built once (InitOptixTraversal), reused every bounce
+	// (LaunchOptixTraversal), freed once (DestroyOptixTraversal).
 	struct OptixTraversalContext {
-		OptixDeviceContext context  = nullptr;
-		OptixModule        module   = nullptr;
-		OptixProgramGroup  raygenPG   = nullptr;
-		OptixProgramGroup  missPG     = nullptr;
+		OptixDeviceContext context = nullptr;
+		OptixModule        module = nullptr;
+		OptixProgramGroup  raygenPG = nullptr;
+		OptixProgramGroup  missPG = nullptr;
 		OptixProgramGroup  hitgroupPG = nullptr;
 		OptixPipeline      pipeline = nullptr;
 
@@ -42,25 +35,21 @@ namespace Vera::Core {
 		CUdeviceptr iasOutputBuffer = 0;
 		OptixTraversableHandle traversableHandle = 0;
 
-		CUdeviceptr sbtRaygenRecord   = 0;
-		CUdeviceptr sbtMissRecord     = 0;
+		CUdeviceptr sbtRaygenRecord = 0;
+		CUdeviceptr sbtMissRecord = 0;
 		CUdeviceptr sbtHitgroupRecord = 0;
 		OptixShaderBindingTable sbt = {};
 
 		CUdeviceptr d_params = 0; // device copy of OptixTraversalParams, updated + reused each launch
 	};
 
-	// Builds a GAS from geom's triangle buffer and a 1-instance IAS wrapping it with that
-	// instance's transform (matches the current single-instance scene structure -- see
-	// OptixTraversal.cpp for the known limitation around multi-instance scenes), then sets up
-	// the OptiX module/pipeline/SBT from the precompiled OptixPrograms PTX.
+	// Builds a GAS + 1-instance IAS from geom, then the module/pipeline/SBT from the
+	// precompiled OptixPrograms PTX. (Single-instance only - see OptixTraversal.cpp.)
 	OptixTraversalContext InitOptixTraversal(const GeometryBuffers& geom);
 	void DestroyOptixTraversal(OptixTraversalContext& ctx);
 
-	// Traces `rayCount` rays from rayCore through the OptiX-accelerated scene, writing results
-	// into `hits` -- same WavefrontHitRecord layout and semantics as Traversal.cuh's
-	// TraversalKernelWavefront, so callers downstream don't need to know which backend produced
-	// the hit.
+	// Traces `rayCount` rays into `hits` - same WavefrontHitRecord layout as
+	// Traversal.cuh's TraversalKernelWavefront, so downstream is backend-agnostic.
 	void LaunchOptixTraversal(
 		OptixTraversalContext& ctx,
 		Spectral::HWSS::RayCoreSoA rayCore,

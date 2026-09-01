@@ -5,10 +5,8 @@
 #include "SpectralConstants.h"
 #include "PhaseFunction.cuh"
 
-// Scalar (per-wavelength) port of FlashPath-FA2's RGBMatHelpers. The sampling
-// geometry (ONB, cosine hemisphere, GGX D/G, VNDF sampling, refraction) is
-// wavelength-agnostic and carried over unchanged; only Fresnel/reflectance
-// become single-wavelength scalars instead of RGB triples.
+// BSDF helpers: ONB, cosine hemisphere, GGX D/G/VNDF, refraction, dielectric Fresnel.
+// Geometry is wavelength-agnostic; Fresnel/reflectance are per-wavelength scalars.
 namespace Vera::Spectral::HWSS {
 	struct MatHelpersHWSS final {
 		__device__ __forceinline__ static void buildONB(const float3& normal, float3& tangent, float3& bitangent) {
@@ -45,9 +43,9 @@ namespace Vera::Spectral::HWSS {
 		}
 
 		__device__ __forceinline__ static float schlickFresnel(float f0, float cosTheta) {
-			float m  = 1.f - cosTheta;
+			float m = 1.f - cosTheta;
 			float m2 = m * m;
-			float t  = m2 * m2 * m;
+			float t = m2 * m2 * m;
 			return f0 + (1.f - f0) * t;
 		}
 
@@ -65,7 +63,7 @@ namespace Vera::Spectral::HWSS {
 		}
 
 		__device__ __forceinline__ static float3 sampleGGXVNDF(float3 ve, float alpha, float2 u) {
-			// Heitz 2018 — "Sampling the GGX Distribution of Visible Normals"
+			// Heitz 2018
 			float3 Vh = normalize(make_float3(alpha * ve.x, alpha * ve.y, ve.z));
 
 			float3 T1 = (Vh.z < 0.9999f) ? normalize(cross(make_float3(0.f, 0.f, 1.f), Vh))
@@ -103,7 +101,7 @@ namespace Vera::Spectral::HWSS {
 		}
 
 		__device__ __forceinline__ static bool refract(float3 wi, float3 n, float eta, float3& wt) {
-			float cosThetaI  = dot(-wi, n);
+			float cosThetaI = dot(-wi, n);
 			float sin2ThetaT = eta * eta * fmaxf(0.f, 1.f - cosThetaI * cosThetaI);
 			if (sin2ThetaT >= 1.f) return false;
 			float cosThetaT = sqrtf(1.f - sin2ThetaT);
@@ -112,23 +110,22 @@ namespace Vera::Spectral::HWSS {
 		}
 
 		__device__ __forceinline__ static bool sampleGGXVNDFTransmission(
-			float3 wo_l, float alpha, float eta, float2 u, float3& wt_l, float& pdf)
-		{
+			float3 wo_l, float alpha, float eta, float2 u, float3& wt_l, float& pdf) {
 			float3 h_l = sampleGGXVNDF(wo_l, alpha, u);
 
 			float3 wi_l = -wo_l;
-			float3 n_l  = h_l;
+			float3 n_l = h_l;
 			if (!refract(wi_l, n_l, eta, wt_l)) return false;
 			if (wt_l.z >= 0.f) return false;
 
-			float  a2      = alpha * alpha;
-			float  D       = evalGGX(h_l, alpha);
-			float  G1wo    = 2.f * wo_l.z / (wo_l.z + sqrtf(a2 + (1.f - a2) * wo_l.z * wo_l.z));
+			float  a2 = alpha * alpha;
+			float  D = evalGGX(h_l, alpha);
+			float  G1wo = 2.f * wo_l.z / (wo_l.z + sqrtf(a2 + (1.f - a2) * wo_l.z * wo_l.z));
 			float  vndfPdf = D * G1wo / fmaxf(4.f * wo_l.z, 1e-7f);
 
-			float  woDotH  = fmaxf(dot(wo_l, h_l), 1e-7f);
-			float  wtDotH  = fabsf(dot(wt_l, h_l));
-			float  denom   = eta * woDotH + wtDotH;
+			float  woDotH = fmaxf(dot(wo_l, h_l), 1e-7f);
+			float  wtDotH = fabsf(dot(wt_l, h_l));
+			float  denom = eta * woDotH + wtDotH;
 			float  jacobian = wtDotH / fmaxf(denom * denom, 1e-7f);
 
 			pdf = vndfPdf * jacobian;

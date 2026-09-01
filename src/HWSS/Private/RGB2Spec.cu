@@ -41,11 +41,11 @@ namespace Vera::Spectral::HWSS {
 		}
 
 		size_t dataCount = (size_t)3 * res * res * res * 3;
-		table.res   = res;
+		table.res = res;
 		table.scale = new float[res];
-		table.data  = new float[dataCount];
+		table.data = new float[dataCount];
 		fread(table.scale, sizeof(float), res, f);
-		fread(table.data,  sizeof(float), dataCount, f);
+		fread(table.data, sizeof(float), dataCount, f);
 		fclose(f);
 		return table;
 	}
@@ -98,19 +98,19 @@ namespace Vera::Spectral::HWSS {
 
 		auto idx = [&](int zc, int yc, int xc, int c) -> size_t {
 			return (((size_t)maxc * res + zc) * res + yc) * res * 3 + (size_t)xc * 3 + c;
-		};
+			};
 
 		RGBSigmoidPolynomial poly{};
 		float* out[3] = { &poly.c0, &poly.c1, &poly.c2 };
 		for (int c = 0; c < 3; ++c) {
-			float c000 = table.data[idx(zi,   yi,   xi,   c)];
-			float c100 = table.data[idx(zi,   yi,   xi+1, c)];
-			float c010 = table.data[idx(zi,   yi+1, xi,   c)];
-			float c110 = table.data[idx(zi,   yi+1, xi+1, c)];
-			float c001 = table.data[idx(zi+1, yi,   xi,   c)];
-			float c101 = table.data[idx(zi+1, yi,   xi+1, c)];
-			float c011 = table.data[idx(zi+1, yi+1, xi,   c)];
-			float c111 = table.data[idx(zi+1, yi+1, xi+1, c)];
+			float c000 = table.data[idx(zi, yi, xi, c)];
+			float c100 = table.data[idx(zi, yi, xi + 1, c)];
+			float c010 = table.data[idx(zi, yi + 1, xi, c)];
+			float c110 = table.data[idx(zi, yi + 1, xi + 1, c)];
+			float c001 = table.data[idx(zi + 1, yi, xi, c)];
+			float c101 = table.data[idx(zi + 1, yi, xi + 1, c)];
+			float c011 = table.data[idx(zi + 1, yi + 1, xi, c)];
+			float c111 = table.data[idx(zi + 1, yi + 1, xi + 1, c)];
 
 			float c00 = c000 * (1.f - dx) + c100 * dx;
 			float c10 = c010 * (1.f - dx) + c110 * dx;

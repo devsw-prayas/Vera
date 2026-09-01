@@ -7,46 +7,32 @@
 #include "SpectralConstants.h"
 
 namespace Vera::Spectral::HWSS {
-
-	// Environment light. Two modes, selected by `tex`:
+	// Environment light. tex == 0: constant sky colour (upsampled like an emissive
+	// Material; no NEE). tex != 0: equirectangular HDRI - per texel, sigmoid-poly coeffs
+	// of the unit-max-normalised colour in .xyz and radiance magnitude in .w, plus a
+	// PBRT-style 2D piecewise-constant distribution (sin(theta)-weighted) for NEE.
 	//
-	//  * Constant (tex == 0): a single uniform sky colour, upsampled once on the
-	//    host the same way an emissive Material is. No NEE — a constant field
-	//    under a cosine/GGX lobe is already low-variance and BSDF sampling picks
-	//    it up on ray miss.
-	//
-	//  * Textured (tex != 0): an equirectangular (lat-long) HDRI. Per texel we
-	//    store the Jakob-Hanika sigmoid-polynomial coefficients of the *unit-max
-	//    normalised* colour in .xyz and the scalar radiance magnitude in .w
-	//    (sigmoid upsampling is only defined on [0,1], so chroma and magnitude
-	//    are separated). A PBRT-style 2D piecewise-constant distribution
-	//    (per-row conditional CDFs + a marginal over rows, each row weighted by
-	//    sin(theta)) drives importance-sampled NEE, MIS-combined with BSDF
-	//    sampling on the miss path.
-	//
-	// Direction <-> uv convention (world space, +Y up):
-	//   theta = acos(dir.y)          v = theta / PI           (v=0 at +Y pole)
-	//   phi   = atan2(dir.z, dir.x)  u = phi / (2 PI) + 0.5
+	// Direction <-> uv (+Y up): theta=acos(dir.y), v=theta/PI; phi=atan2(dir.z,dir.x), u=phi/(2PI)+0.5
 	struct EnvMapHWSS final {
 		RGBSigmoidPolynomial colorSpec;         // constant-mode colour
-		float                intensity   = 0.f; // radiance multiplier (both modes)
+		float                intensity = 0.f; // radiance multiplier (both modes)
 
-		cudaTextureObject_t  tex         = 0;   // float4 lat-long texels; 0 => constant mode
-		int                  width       = 0;
-		int                  height      = 0;
-		const float*         func        = nullptr; // device: width*height, sin(theta)-weighted luminance
-		const float*         condCdf     = nullptr; // device: height*(width+1), per-row normalised CDF
-		const float*         marginalCdf = nullptr; // device: height+1, normalised CDF over rows
-		float                funcInt     = 0.f;     // mean of `func`; pdf(u,v) = func[u,v] / funcInt
+		cudaTextureObject_t  tex = 0;   // float4 lat-long texels; 0 => constant mode
+		int                  width = 0;
+		int                  height = 0;
+		const float* func = nullptr; // device: width*height, sin(theta)-weighted luminance
+		const float* condCdf = nullptr; // device: height*(width+1), per-row normalised CDF
+		const float* marginalCdf = nullptr; // device: height+1, normalised CDF over rows
+		float                funcInt = 0.f;     // mean of `func`; pdf(u,v) = func[u,v] / funcInt
 	};
 
-	// ── uv <-> direction ─────────────────────────────────────────────────────
+	// -- uv <-> direction -----------------------------------------------------
 	__host__ __device__ inline void EnvDirToUV(float3 dir, float& u, float& v, float& sinTheta) {
-		float d = 1.f / sqrtf(fmaxf(dir.x*dir.x + dir.y*dir.y + dir.z*dir.z, 1e-20f));
-		float x = dir.x*d, y = dir.y*d, z = dir.z*d;
+		float d = 1.f / sqrtf(fmaxf(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z, 1e-20f));
+		float x = dir.x * d, y = dir.y * d, z = dir.z * d;
 		float cosTheta = fminf(fmaxf(y, -1.f), 1.f);
 		float theta = acosf(cosTheta);
-		float phi   = atan2f(z, x);
+		float phi = atan2f(z, x);
 		u = phi * (0.5f / PI) + 0.5f;
 		v = theta * (1.f / PI);
 		sinTheta = sqrtf(fmaxf(1.f - cosTheta * cosTheta, 0.f));
@@ -54,13 +40,12 @@ namespace Vera::Spectral::HWSS {
 
 	__host__ __device__ inline float3 EnvUVToDir(float u, float v, float& sinTheta) {
 		float theta = v * PI;
-		float phi   = (u - 0.5f) * (2.f * PI);
+		float phi = (u - 0.5f) * (2.f * PI);
 		float st = sinf(theta), ct = cosf(theta);
 		sinTheta = st;
 		return make_float3(st * cosf(phi), ct, st * sinf(phi));
 	}
 
-	// ── constant-mode host factory (unchanged behaviour) ─────────────────────
 	inline EnvMapHWSS MakeConstEnvMap(const RGB2SpecTable& table, float3 colorRGB, float intensity) {
 		EnvMapHWSS env{};
 		env.colorSpec = RGB2SpecLookup(table, colorRGB);
@@ -68,13 +53,11 @@ namespace Vera::Spectral::HWSS {
 		return env;
 	}
 
-	// Textured-mode build/free live in EnvMapHWSS.cu (CUDA allocation + the
-	// Distribution2D construction).
+	// Textured-mode build/free live in EnvMapHWSS.cu.
 	struct HdrEnvSource { const float3* pixels; int width; int height; };
 	EnvMapHWSS MakeImageEnvMap(const RGB2SpecTable& table, const HdrEnvSource& src, float intensity);
 	void       FreeImageEnvMap(EnvMapHWSS& env);
 
-	// ── device evaluation ───────────────────────────────────────────────────
 	// Per-lane radiance from direction `dir` at wavelength `lambda`.
 	__device__ inline float EvalEnvMapDir(const EnvMapHWSS& env, float3 dir, float lambda) {
 		if (env.tex == 0) return env.colorSpec(lambda) * env.intensity;

@@ -5,7 +5,7 @@
 namespace Vera::Spectral::HWSS {
 	FrameBufferHWSS AllocFrameBuffer(uint32_t width, uint32_t height) {
 		FrameBufferHWSS fb{};
-		fb.width  = width;
+		fb.width = width;
 		fb.height = height;
 		size_t count = (size_t)width * height;
 		cudaMalloc(&fb.d_accumXYZ, count * sizeof(float3));
@@ -25,8 +25,7 @@ namespace Vera::Spectral::HWSS {
 
 	__global__ void ResolveFrameBufferKernel(
 		FrameBufferHWSS fb, uint32_t spp, float cieYIntegral,
-		Core::ToneMapper tm, float exposure, float4* outRGB)
-	{
+		Core::ToneMapper tm, float exposure, float4* outRGB) {
 		unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
 		if (idx >= fb.width * fb.height) return;
 

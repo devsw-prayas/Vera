@@ -5,7 +5,7 @@
 
 namespace Vera::Spectral::HWSS {
 	// Accumulates per-pixel CIE XYZ (not RGB) since each HWSS sample only ever
-	// contributes at 4 discrete wavelengths — XYZ is the natural accumulation
+	// contributes at 4 discrete wavelengths - XYZ is the natural accumulation
 	// space, converted to display RGB once at resolve time.
 	struct FrameBufferHWSS final {
 		float3*  d_accumXYZ = nullptr;

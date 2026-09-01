@@ -6,13 +6,10 @@
 #include <cuda_runtime.h>
 
 namespace Vera::Spectral::HWSS {
-	// Representative wavelength for flux/importance weighting only (BVH node
-	// scoring doesn't need to be spectrally exact — actual radiance is always
-	// evaluated per-lane at shading time via EvalEmission).
+	// flux weighting only; actual radiance is per-lane at shading time
 	static constexpr float kFluxLambda = 555.f;
 
-	// Unnormalized edge1 x edge2 — area and normal both derive from this single
-	// cross product instead of each recomputing it independently.
+	// Unnormalized edge1 x edge2; area and normal both derive from it.
 	static float3 triCross(float3 v0, float3 v1, float3 v2) {
 		float ex = v1.x-v0.x, ey = v1.y-v0.y, ez = v1.z-v0.z;
 		float fx = v2.x-v0.x, fy = v2.y-v0.y, fz = v2.z-v0.z;

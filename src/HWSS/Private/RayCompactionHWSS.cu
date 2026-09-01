@@ -17,8 +17,7 @@ namespace Vera::Spectral::HWSS {
 	__global__ void GatherRaysKernel(
 		RayCoreSoA coreIn, RayExtSoA extIn,
 		const uint32_t* __restrict__ order, uint32_t count,
-		RayCoreSoA coreOut, RayExtSoA extOut)
-	{
+		RayCoreSoA coreOut, RayExtSoA extOut) {
 		unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
 		if (idx >= count) return;
 		StoreRay(coreOut, extOut, idx, LoadRay(coreIn, extIn, order[idx]));
@@ -67,8 +66,7 @@ namespace Vera::Spectral::HWSS {
 
 	uint32_t RayCompactor::Compact(
 		RayCoreSoA coreIn, RayExtSoA extIn, uint32_t count,
-		RayCoreSoA coreOut, RayExtSoA extOut, cudaStream_t stream)
-	{
+		RayCoreSoA coreOut, RayExtSoA extOut, cudaStream_t stream) {
 		if (count == 0) {
 			return 0;
 		}
@@ -94,7 +92,7 @@ namespace Vera::Spectral::HWSS {
 		if (hostCount > 0) {
 			dim3 block(256);
 			dim3 grid((hostCount + block.x - 1) / block.x);
-			GatherRaysKernel<<<grid, block, 0, stream>>>(coreIn, extIn, d_order, hostCount, coreOut, extOut);
+			GatherRaysKernel << <grid, block, 0, stream >> > (coreIn, extIn, d_order, hostCount, coreOut, extOut);
 		}
 
 		return hostCount;

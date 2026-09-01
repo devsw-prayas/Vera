@@ -25,45 +25,44 @@ namespace Vera::Spectral::HWSS {
 		unsigned char defaultMediumIdx,
 		Core::ToneMapper tonemapper,
 		float exposure,
-		bool useOptix)
-	{
+		bool useOptix) {
 		uint32_t rayCount = camera.m_Width * camera.m_Height;
 
 		RayCoreSoA coreA{}, coreB{};
-		RayExtSoA  extA{},  extB{};
-		cudaMalloc(&coreA.origin,      rayCount * sizeof(float3));
-		cudaMalloc(&coreA.direction,   rayCount * sizeof(float3));
-		cudaMalloc(&coreA.flags,       rayCount * sizeof(unsigned char));
-		cudaMalloc(&coreB.origin,      rayCount * sizeof(float3));
-		cudaMalloc(&coreB.direction,   rayCount * sizeof(float3));
-		cudaMalloc(&coreB.flags,       rayCount * sizeof(unsigned char));
-		cudaMalloc(&extA.wavelengths,       rayCount * sizeof(float4));
+		RayExtSoA  extA{}, extB{};
+		cudaMalloc(&coreA.origin, rayCount * sizeof(float3));
+		cudaMalloc(&coreA.direction, rayCount * sizeof(float3));
+		cudaMalloc(&coreA.flags, rayCount * sizeof(unsigned char));
+		cudaMalloc(&coreB.origin, rayCount * sizeof(float3));
+		cudaMalloc(&coreB.direction, rayCount * sizeof(float3));
+		cudaMalloc(&coreB.flags, rayCount * sizeof(unsigned char));
+		cudaMalloc(&extA.wavelengths, rayCount * sizeof(float4));
 		cudaMalloc(&extA.sensorWavelengths, rayCount * sizeof(float4));
-		cudaMalloc(&extA.throughput,   rayCount * sizeof(float4));
-		cudaMalloc(&extA.pdf,          rayCount * sizeof(float4));
-		cudaMalloc(&extA.rngState,     rayCount * sizeof(unsigned long long));
-		cudaMalloc(&extA.pixelId,      rayCount * sizeof(unsigned int));
-		cudaMalloc(&extA.bounceCount,  rayCount * sizeof(unsigned char));
-		cudaMalloc(&extA.iorCurr,      rayCount * sizeof(float));
-		cudaMalloc(&extA.mediumIdx,    rayCount * sizeof(unsigned char));
+		cudaMalloc(&extA.throughput, rayCount * sizeof(float4));
+		cudaMalloc(&extA.pdf, rayCount * sizeof(float4));
+		cudaMalloc(&extA.rngState, rayCount * sizeof(unsigned long long));
+		cudaMalloc(&extA.pixelId, rayCount * sizeof(unsigned int));
+		cudaMalloc(&extA.bounceCount, rayCount * sizeof(unsigned char));
+		cudaMalloc(&extA.iorCurr, rayCount * sizeof(float));
+		cudaMalloc(&extA.mediumIdx, rayCount * sizeof(unsigned char));
 		cudaMalloc(&extA.laneFluoresced, rayCount * sizeof(unsigned char));
-		cudaMalloc(&extA.bsdfPdf,      rayCount * sizeof(float));
-		cudaMalloc(&extA.sampleIdx,    rayCount * sizeof(unsigned int));
-		cudaMalloc(&extB.wavelengths,       rayCount * sizeof(float4));
+		cudaMalloc(&extA.bsdfPdf, rayCount * sizeof(float));
+		cudaMalloc(&extA.sampleIdx, rayCount * sizeof(unsigned int));
+		cudaMalloc(&extB.wavelengths, rayCount * sizeof(float4));
 		cudaMalloc(&extB.sensorWavelengths, rayCount * sizeof(float4));
-		cudaMalloc(&extB.throughput,   rayCount * sizeof(float4));
-		cudaMalloc(&extB.pdf,          rayCount * sizeof(float4));
-		cudaMalloc(&extB.rngState,     rayCount * sizeof(unsigned long long));
-		cudaMalloc(&extB.pixelId,      rayCount * sizeof(unsigned int));
-		cudaMalloc(&extB.bounceCount,  rayCount * sizeof(unsigned char));
-		cudaMalloc(&extB.iorCurr,      rayCount * sizeof(float));
-		cudaMalloc(&extB.mediumIdx,    rayCount * sizeof(unsigned char));
+		cudaMalloc(&extB.throughput, rayCount * sizeof(float4));
+		cudaMalloc(&extB.pdf, rayCount * sizeof(float4));
+		cudaMalloc(&extB.rngState, rayCount * sizeof(unsigned long long));
+		cudaMalloc(&extB.pixelId, rayCount * sizeof(unsigned int));
+		cudaMalloc(&extB.bounceCount, rayCount * sizeof(unsigned char));
+		cudaMalloc(&extB.iorCurr, rayCount * sizeof(float));
+		cudaMalloc(&extB.mediumIdx, rayCount * sizeof(unsigned char));
 		cudaMalloc(&extB.laneFluoresced, rayCount * sizeof(unsigned char));
-		cudaMalloc(&extB.bsdfPdf,      rayCount * sizeof(float));
-		cudaMalloc(&extB.sampleIdx,    rayCount * sizeof(unsigned int));
+		cudaMalloc(&extB.bsdfPdf, rayCount * sizeof(float));
+		cudaMalloc(&extB.sampleIdx, rayCount * sizeof(unsigned int));
 
 		Core::WavefrontHitRecord* d_hits = nullptr;
-		cudaMalloc(&d_hits,  rayCount * sizeof(Core::WavefrontHitRecord));
+		cudaMalloc(&d_hits, rayCount * sizeof(Core::WavefrontHitRecord));
 
 		dim3 block2D(16, 16);
 		dim3 grid2D((camera.m_Width + block2D.x - 1) / block2D.x, (camera.m_Height + block2D.y - 1) / block2D.y);
@@ -83,7 +82,7 @@ namespace Vera::Spectral::HWSS {
 #endif
 
 		for (uint32_t sampleIdx = 0; sampleIdx < samplesPerPixel; ++sampleIdx) {
-			GeneratePrimaryRaysHWSSKernel<<<grid2D, block2D>>>(camera, coreA, extA, sampleIdx, defaultMediumIdx);
+			GeneratePrimaryRaysHWSSKernel << <grid2D, block2D >> > (camera, coreA, extA, sampleIdx, defaultMediumIdx);
 
 			uint32_t activeCount = rayCount;
 			for (uint32_t bounce = 0; bounce < maxBounces && activeCount > 0; ++bounce) {
@@ -93,9 +92,9 @@ namespace Vera::Spectral::HWSS {
 					Core::LaunchOptixTraversal(optixCtx, coreA, d_hits, activeCount, /*stream*/0);
 				else
 #endif
-					Core::TraversalKernelWavefront<<<grid1D, block1D>>>(geom, coreA, d_hits, activeCount);
+					Core::TraversalKernelWavefront << <grid1D, block1D >> > (geom, coreA, d_hits, activeCount);
 				uint32_t* order = sorter.Sort(geom, d_hits, activeCount, /*stream*/0);
-				ShadeKernelHWSSWavefront<<<grid1D, block1D>>>(
+				ShadeKernelHWSSWavefront << <grid1D, block1D >> > (
 					geom, coreA, extA, d_hits, order, d_materials, d_media, lightBvh,
 					coreB, extB, activeCount, fb, envMap, maxBounces, cieTex.tex);
 				activeCount = compactor.Compact(coreB, extB, activeCount, coreA, extA, /*stream*/0);
@@ -124,6 +123,6 @@ namespace Vera::Spectral::HWSS {
 
 		float cieYIntegral = CIE_Y_Integral(LAMBDA_MIN, LAMBDA_MAX);
 		dim3 grid1D((rayCount + block1D.x - 1) / block1D.x);
-		ResolveFrameBufferKernel<<<grid1D, block1D>>>(fb, samplesPerPixel, cieYIntegral, tonemapper, exposure, d_outRGB);
+		ResolveFrameBufferKernel << <grid1D, block1D >> > (fb, samplesPerPixel, cieYIntegral, tonemapper, exposure, d_outRGB);
 	}
 }

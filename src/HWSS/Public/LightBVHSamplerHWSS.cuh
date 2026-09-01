@@ -19,10 +19,8 @@ __device__ inline float lightNodeScore(const LightBVHNode& node, const float3& p
     return node.flux * (cosEff + 1e-3f) / dist2;
 }
 
-// Samples a point on a light using the BVH. Returns the sampled position, normal,
-// material (evaluate emission via EvalEmission), and area-measure PDF. Caller does
-// the shadow test separately.
-// uTraversal is rescaled at each split so a single float drives the whole traversal.
+// Stochastic BVH descent to a light sample. Caller does the shadow test.
+// uTraversal rescaled at each split; one float drives the whole descent.
 __device__ inline LightSample SampleLightBVH(
     const LightBVH&              bvh,
     const Core::GeometryBuffers& geom,
@@ -36,7 +34,7 @@ __device__ inline LightSample SampleLightBVH(
 
     if (bvh.nodeCount == 0 || bvh.lightCount == 0) return ls;
 
-    // Stochastic BVH traversal — descend until leaf
+    // Stochastic BVH traversal - descend until leaf
     uint32_t nodeIdx = 0;
     float traversalPdf = 1.f;
 
@@ -60,7 +58,7 @@ __device__ inline LightSample SampleLightBVH(
 
     const LightEntry& light = bvh.lights[bvh.nodes[nodeIdx].lightIdx];
 
-    // Pick triangle from CDF (linear scan — light triCount is small)
+    // Pick triangle from CDF (linear scan - light triCount is small)
     uint32_t triLocal = light.triCount - 1;
     for (uint32_t k = 0; k < light.triCount; ++k) {
         if (uTri <= bvh.triAreaCDF[light.firstTri + k]) { triLocal = k; break; }
@@ -100,13 +98,7 @@ __device__ inline LightSample SampleLightBVH(
     return ls;
 }
 
-// Computes the area-measure PDF for a BSDF ray that happened to hit an emissive triangle.
-// Replays the stochastic BVH traversal from shadingPt using the same score function as
-// SampleLightBVH, accumulating exact branching probabilities instead of the flux-ratio
-// approximation (which is wrong for multi-light scenes with distance/angle variation).
-// Walks the light's precomputed root-to-leaf path (built once, host-side, in
-// LightBVHBuilderHWSS.cu) instead of re-deriving direction via a subtree DFS at each level —
-// O(depth) instead of O(depth * subtree size).
+// Recover the exact BVH traversal pdf for a BSDF ray that hit an emissive triangle (for MIS).
 __device__ inline float EmissiveHitPdf(const LightBVH& bvh, uint32_t primIdx, const float3& shadingPt) {
     if (primIdx >= bvh.totalPrimCount || bvh.lightCount == 0 || bvh.nodeCount == 0) return 0.f;
     uint32_t targetLight = bvh.primToLight[primIdx];

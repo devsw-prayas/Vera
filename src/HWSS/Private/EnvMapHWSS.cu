@@ -6,23 +6,20 @@
 #include <cstdio>
 
 namespace Vera::Spectral::HWSS {
-
-	// Build the lat-long importance-sampling data + upload the spectral texel
-	// texture. `func` is the sin(theta)-weighted per-texel luminance PBRT's
-	// InfiniteAreaLight uses as its 2D distribution: the sin(theta) row weight
-	// makes uniform-ish skies sample uniformly over the sphere and cancels
-	// against the equirect Jacobian (2 PI^2 sin theta) in the pdf.
+	// Build the lat-long importance-sampling distribution + upload the spectral texel
+	// texture. `func` is sin(theta)-weighted per-texel luminance (PBRT InfiniteAreaLight);
+	// the row weight cancels the equirect Jacobian (2 PI^2 sin theta) in the pdf.
 	EnvMapHWSS MakeImageEnvMap(const RGB2SpecTable& table, const HdrEnvSource& src, float intensity) {
 		EnvMapHWSS env{};
 		env.intensity = intensity;
 
 		const int w = src.width, h = src.height;
 		if (!src.pixels || w <= 0 || h <= 0) {
-			fprintf(stderr, "MakeImageEnvMap: empty source — falling back to black constant env.\n");
+			fprintf(stderr, "MakeImageEnvMap: empty source - falling back to black constant env.\n");
 			return env; // tex == 0, intensity carried but colorSpec is black
 		}
 
-		env.width  = w;
+		env.width = w;
 		env.height = h;
 
 		std::vector<float4> texels((size_t)w * h);
@@ -79,35 +76,35 @@ namespace Vera::Spectral::HWSS {
 		marginalCdf[h] = 1.f;
 		env.funcInt = (funcInt > 0.f) ? funcInt : 1.f;
 
-		// ── texel texture: wrap in u (phi), clamp in v (theta) ──
+		// -- texel texture: wrap in u (phi), clamp in v (theta) --
 		cudaArray_t array = nullptr;
 		cudaChannelFormatDesc desc = cudaCreateChannelDesc<float4>();
 		cudaMallocArray(&array, &desc, w, h);
 		cudaMemcpy2DToArray(array, 0, 0, texels.data(), (size_t)w * sizeof(float4),
-			(size_t)w * sizeof(float4), h, cudaMemcpyHostToDevice);
+							(size_t)w * sizeof(float4), h, cudaMemcpyHostToDevice);
 
 		cudaResourceDesc resDesc{};
-		resDesc.resType         = cudaResourceTypeArray;
+		resDesc.resType = cudaResourceTypeArray;
 		resDesc.res.array.array = array;
 
 		cudaTextureDesc texDesc{};
-		texDesc.addressMode[0]   = cudaAddressModeWrap;
-		texDesc.addressMode[1]   = cudaAddressModeClamp;
-		texDesc.filterMode       = cudaFilterModeLinear;
-		texDesc.readMode         = cudaReadModeElementType;
+		texDesc.addressMode[0] = cudaAddressModeWrap;
+		texDesc.addressMode[1] = cudaAddressModeClamp;
+		texDesc.filterMode = cudaFilterModeLinear;
+		texDesc.readMode = cudaReadModeElementType;
 		texDesc.normalizedCoords = 1;
 		cudaCreateTextureObject(&env.tex, &resDesc, &texDesc, nullptr);
 
-		// ── distribution buffers ──
-		float *dFunc = nullptr, *dCond = nullptr, *dMarg = nullptr;
-		cudaMalloc(&dFunc, func.size()       * sizeof(float));
-		cudaMalloc(&dCond, condCdf.size()    * sizeof(float));
-		cudaMalloc(&dMarg, marginalCdf.size()* sizeof(float));
-		cudaMemcpy(dFunc, func.data(),        func.size()        * sizeof(float), cudaMemcpyHostToDevice);
-		cudaMemcpy(dCond, condCdf.data(),     condCdf.size()     * sizeof(float), cudaMemcpyHostToDevice);
+		// -- distribution buffers --
+		float* dFunc = nullptr, * dCond = nullptr, * dMarg = nullptr;
+		cudaMalloc(&dFunc, func.size() * sizeof(float));
+		cudaMalloc(&dCond, condCdf.size() * sizeof(float));
+		cudaMalloc(&dMarg, marginalCdf.size() * sizeof(float));
+		cudaMemcpy(dFunc, func.data(), func.size() * sizeof(float), cudaMemcpyHostToDevice);
+		cudaMemcpy(dCond, condCdf.data(), condCdf.size() * sizeof(float), cudaMemcpyHostToDevice);
 		cudaMemcpy(dMarg, marginalCdf.data(), marginalCdf.size() * sizeof(float), cudaMemcpyHostToDevice);
-		env.func        = dFunc;
-		env.condCdf     = dCond;
+		env.func = dFunc;
+		env.condCdf = dCond;
 		env.marginalCdf = dMarg;
 
 		return env;
