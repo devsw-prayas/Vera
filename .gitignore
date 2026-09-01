@@ -106,6 +106,9 @@ renders/*
 *.exr
 *.hdr
 /output*.png
+# ad-hoc renders dumped at repo root by Main.cu / examples scripts (assets/ is
+# the real gallery and stays tracked — this only matches the root itself)
+/*.png
 /problems/
 
 # Claude

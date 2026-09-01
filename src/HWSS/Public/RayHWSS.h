@@ -9,6 +9,7 @@ namespace Vera::Spectral::HWSS {
 	// the offset lanes are no longer valid samples of the same path and are zeroed out,
 	// leaving only the hero lane (m_Wavelengths.x) carrying weight from that point on.
 	static constexpr unsigned char RAY_FLAG_DISPERSED = 0x04;
+	// 0x08 reserved: fluorescence state is per-lane, see RayHWSS::m_LaneFluoresced.
 
 	// Hero + 3 offset wavelengths sampled per path (Hero Wavelength Spectral Sampling).
 	static constexpr int HWSS_LANES = 4;
@@ -25,7 +26,11 @@ namespace Vera::Spectral::HWSS {
 	struct alignas(16) RayHWSS final {
 		float3             m_Origin;
 		float3             m_Direction;
-		float4             m_Wavelengths;  // nm; .x = hero, .yzw = offsets (rotation of hero)
+		float4             m_Wavelengths;  // nm; .x = hero, .yzw = offsets. TRACE wavelengths the path
+		                                   // currently gathers radiance at; mutated by fluorescent shifts.
+		float4             m_SensorWavelengths; // nm; the wavelengths that set each lane's CIE weight.
+		                                   // Equal to m_Wavelengths at ray-gen; diverges once a
+		                                   // fluorescent event shifts a trace wavelength.
 		float4             m_Throughput;   // per-lane path throughput
 		float4             m_Pdf;          // per-lane wavelength-sampling pdf, for HWSS MIS weighting
 		unsigned long long m_RngState;
@@ -34,7 +39,11 @@ namespace Vera::Spectral::HWSS {
 		unsigned char      flags;
 		float              m_IorCurr;
 		unsigned char      m_MediumIdx;   // 1-indexed (0 = vacuum); max 255 distinct media
-		unsigned char      m_Pad[2];
+		// Per-lane bitmask (bit k => lane k) marking lanes shifted by a fluorescent
+		// event at the last surface bounce; used to MIS-weight env-map hits after a
+		// shift (no fluorescent env NEE yet). Cleared by the next elastic bounce.
+		unsigned char      m_LaneFluoresced = 0;
+		unsigned char      m_Pad[1];
 		// Solid-angle pdf of the last BSDF-sampled scatter direction (wavelength-
 		// independent — direction sampling isn't per-lane). Used to MIS-weight a
 		// BSDF-sampled ray that happens to land on a light against NEE. Meaningless
@@ -65,7 +74,8 @@ namespace Vera::Spectral::HWSS {
 	};
 
 	struct RayExtSoA {
-		float4*             wavelengths = nullptr;
+		float4*             wavelengths       = nullptr;
+		float4*             sensorWavelengths = nullptr;
 		float4*             throughput  = nullptr;
 		float4*             pdf         = nullptr;
 		unsigned long long* rngState    = nullptr;
@@ -73,6 +83,7 @@ namespace Vera::Spectral::HWSS {
 		unsigned char*      bounceCount = nullptr;
 		float*              iorCurr     = nullptr;
 		unsigned char*      mediumIdx   = nullptr;
+		unsigned char*      laneFluoresced = nullptr;
 		float*              bsdfPdf     = nullptr;
 		unsigned int*       sampleIdx   = nullptr;
 	};
@@ -83,6 +94,7 @@ namespace Vera::Spectral::HWSS {
 		ray.m_Direction   = core.direction[i];
 		ray.flags         = core.flags[i];
 		ray.m_Wavelengths = ext.wavelengths[i];
+		ray.m_SensorWavelengths = ext.sensorWavelengths[i];
 		ray.m_Throughput  = ext.throughput[i];
 		ray.m_Pdf         = ext.pdf[i];
 		ray.m_RngState    = ext.rngState[i];
@@ -90,6 +102,7 @@ namespace Vera::Spectral::HWSS {
 		ray.m_BounceCount = ext.bounceCount[i];
 		ray.m_IorCurr     = ext.iorCurr[i];
 		ray.m_MediumIdx   = ext.mediumIdx[i];
+		ray.m_LaneFluoresced = ext.laneFluoresced[i];
 		ray.m_BsdfPdf     = ext.bsdfPdf[i];
 		ray.m_SampleIdx   = ext.sampleIdx[i];
 		return ray;
@@ -100,6 +113,7 @@ namespace Vera::Spectral::HWSS {
 		core.direction[i] = ray.m_Direction;
 		core.flags[i]     = ray.flags;
 		ext.wavelengths[i]= ray.m_Wavelengths;
+		ext.sensorWavelengths[i] = ray.m_SensorWavelengths;
 		ext.throughput[i] = ray.m_Throughput;
 		ext.pdf[i]        = ray.m_Pdf;
 		ext.rngState[i]   = ray.m_RngState;
@@ -107,6 +121,7 @@ namespace Vera::Spectral::HWSS {
 		ext.bounceCount[i]= ray.m_BounceCount;
 		ext.iorCurr[i]    = ray.m_IorCurr;
 		ext.mediumIdx[i]  = ray.m_MediumIdx;
+		ext.laneFluoresced[i] = ray.m_LaneFluoresced;
 		ext.bsdfPdf[i]    = ray.m_BsdfPdf;
 		ext.sampleIdx[i]  = ray.m_SampleIdx;
 	}

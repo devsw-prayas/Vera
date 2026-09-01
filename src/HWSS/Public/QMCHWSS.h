@@ -32,7 +32,9 @@
 namespace Vera::Spectral::HWSS {
 	static constexpr int kQmcDimBudget    = 32; // dims [0, kQmcDimBudget) use Halton; beyond, PCG32 fallback
 	static constexpr int kQmcCameraDims   = 8;  // dims [0, 8) reserved for camera ray-gen (uses 5: uv(2)+lens(2)+hero(1))
-	static constexpr int kQmcDimsPerBounce = 8; // dims per bounce thereafter (worst case used: rough dielectric NEE, 7)
+	static constexpr int kQmcDimsPerBounce = 12; // dims per bounce (worst case: rough dielectric NEE 7, or elastic
+	                                             // Lambertian + fluorescent routing/resample draws). Beyond
+	                                             // kQmcDimBudget the PCG32 fallback takes over regardless.
 	static constexpr int kQmcScrambleDigits = 12; // digits scrambled per sample: 2^12=4096 covers any realistic spp for base 2, and far more for larger bases
 
 	__device__ static constexpr uint32_t kHaltonPrimes[kQmcDimBudget] = {

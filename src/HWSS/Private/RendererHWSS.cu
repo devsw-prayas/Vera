@@ -37,7 +37,8 @@ namespace Vera::Spectral::HWSS {
 		cudaMalloc(&coreB.origin,      rayCount * sizeof(float3));
 		cudaMalloc(&coreB.direction,   rayCount * sizeof(float3));
 		cudaMalloc(&coreB.flags,       rayCount * sizeof(unsigned char));
-		cudaMalloc(&extA.wavelengths,  rayCount * sizeof(float4));
+		cudaMalloc(&extA.wavelengths,       rayCount * sizeof(float4));
+		cudaMalloc(&extA.sensorWavelengths, rayCount * sizeof(float4));
 		cudaMalloc(&extA.throughput,   rayCount * sizeof(float4));
 		cudaMalloc(&extA.pdf,          rayCount * sizeof(float4));
 		cudaMalloc(&extA.rngState,     rayCount * sizeof(unsigned long long));
@@ -45,9 +46,11 @@ namespace Vera::Spectral::HWSS {
 		cudaMalloc(&extA.bounceCount,  rayCount * sizeof(unsigned char));
 		cudaMalloc(&extA.iorCurr,      rayCount * sizeof(float));
 		cudaMalloc(&extA.mediumIdx,    rayCount * sizeof(unsigned char));
+		cudaMalloc(&extA.laneFluoresced, rayCount * sizeof(unsigned char));
 		cudaMalloc(&extA.bsdfPdf,      rayCount * sizeof(float));
 		cudaMalloc(&extA.sampleIdx,    rayCount * sizeof(unsigned int));
-		cudaMalloc(&extB.wavelengths,  rayCount * sizeof(float4));
+		cudaMalloc(&extB.wavelengths,       rayCount * sizeof(float4));
+		cudaMalloc(&extB.sensorWavelengths, rayCount * sizeof(float4));
 		cudaMalloc(&extB.throughput,   rayCount * sizeof(float4));
 		cudaMalloc(&extB.pdf,          rayCount * sizeof(float4));
 		cudaMalloc(&extB.rngState,     rayCount * sizeof(unsigned long long));
@@ -55,6 +58,7 @@ namespace Vera::Spectral::HWSS {
 		cudaMalloc(&extB.bounceCount,  rayCount * sizeof(unsigned char));
 		cudaMalloc(&extB.iorCurr,      rayCount * sizeof(float));
 		cudaMalloc(&extB.mediumIdx,    rayCount * sizeof(unsigned char));
+		cudaMalloc(&extB.laneFluoresced, rayCount * sizeof(unsigned char));
 		cudaMalloc(&extB.bsdfPdf,      rayCount * sizeof(float));
 		cudaMalloc(&extB.sampleIdx,    rayCount * sizeof(unsigned int));
 
@@ -108,13 +112,13 @@ namespace Vera::Spectral::HWSS {
 
 		cudaFree(coreA.origin);     cudaFree(coreA.direction);   cudaFree(coreA.flags);
 		cudaFree(coreB.origin);     cudaFree(coreB.direction);   cudaFree(coreB.flags);
-		cudaFree(extA.wavelengths); cudaFree(extA.throughput);   cudaFree(extA.pdf);
+		cudaFree(extA.wavelengths); cudaFree(extA.sensorWavelengths); cudaFree(extA.throughput);   cudaFree(extA.pdf);
 		cudaFree(extA.rngState);    cudaFree(extA.pixelId);      cudaFree(extA.bounceCount);
-		cudaFree(extA.iorCurr);     cudaFree(extA.mediumIdx);    cudaFree(extA.bsdfPdf);
+		cudaFree(extA.iorCurr);     cudaFree(extA.mediumIdx);    cudaFree(extA.laneFluoresced); cudaFree(extA.bsdfPdf);
 		cudaFree(extA.sampleIdx);
-		cudaFree(extB.wavelengths); cudaFree(extB.throughput);   cudaFree(extB.pdf);
+		cudaFree(extB.wavelengths); cudaFree(extB.sensorWavelengths); cudaFree(extB.throughput);   cudaFree(extB.pdf);
 		cudaFree(extB.rngState);    cudaFree(extB.pixelId);      cudaFree(extB.bounceCount);
-		cudaFree(extB.iorCurr);     cudaFree(extB.mediumIdx);    cudaFree(extB.bsdfPdf);
+		cudaFree(extB.iorCurr);     cudaFree(extB.mediumIdx);    cudaFree(extB.laneFluoresced); cudaFree(extB.bsdfPdf);
 		cudaFree(extB.sampleIdx);
 		cudaFree(d_hits);
 

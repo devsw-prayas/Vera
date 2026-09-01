@@ -19,11 +19,15 @@ namespace Vera::Spectral::HWSS {
 	// the hero lane valid. Dividing by the fixed lane count instead of the number of
 	// lanes actually still contributing would silently under-weight every dispersed
 	// sample by that same factor — a real, sample-count-independent bias, not noise.
+	//
+	// `sensorWavelengths`, not trace wavelengths, set each lane's CIE weight — they
+	// diverge once a fluorescent event shifts a lane's trace wavelength (the lane
+	// keeps depositing at the wavelength it was born with).
 	__device__ inline void AccumulateContribution(
 		FrameBufferHWSS& fb, uint32_t pixelId, cudaTextureObject_t cieTex,
-		const float4& wavelengths, const float4& throughput, const float4& pdf, const float4& Le)
+		const float4& sensorWavelengths, const float4& throughput, const float4& pdf, const float4& Le)
 	{
-		float wl[4]     = { wavelengths.x, wavelengths.y, wavelengths.z, wavelengths.w };
+		float wl[4]     = { sensorWavelengths.x, sensorWavelengths.y, sensorWavelengths.z, sensorWavelengths.w };
 		float thpt[4]   = { throughput.x,  throughput.y,  throughput.z,  throughput.w };
 		float pdfArr[4] = { pdf.x, pdf.y, pdf.z, pdf.w };
 		float leArr[4]  = { Le.x, Le.y, Le.z, Le.w };
@@ -227,7 +231,62 @@ namespace Vera::Spectral::HWSS {
 		nee.z *= MH::evalLambertian(reflectance.z) * scale * tr.z;
 		nee.w *= MH::evalLambertian(reflectance.w) * scale * tr.w;
 
-		AccumulateContribution(fb, ray.pixelId, cieTex, ray.m_Wavelengths, nee, ray.m_Pdf, LeVec);
+		AccumulateContribution(fb, ray.pixelId, cieTex, ray.m_SensorWavelengths, nee, ray.m_Pdf, LeVec);
+	}
+
+	// NEE for a fluorescent Lambertian's re-emission lobe: direct light converted
+	// through Phi instead of reflected. One light + one shared excitation
+	// wavelength are sampled per call (shared because the excitation integral
+	// doesn't depend on the output wavelength); each lane then weights by its own
+	// emission density, so lanes far from the emission band contribute ~0. MIS is
+	// paired against the fluoresced BSDF continuation in the caller, which samples
+	// the same light via the same cosine-hemisphere direction.
+	__device__ inline void SampleDirectLightingFluor(
+		Core::GeometryBuffers& geom, const LightBVH& lightBvh, const Material* materials, const MediumHWSS* media,
+		const float3& P, const float3& normal, const Material& mat,
+		RayHWSS& ray, HybridRNG& rng, FrameBufferHWSS& fb, cudaTextureObject_t cieTex)
+	{
+		if (lightBvh.lightCount == 0) return;
+
+		LightSample ls = SampleLightBVH(lightBvh, geom, P, rng.nextFloat(), rng.nextFloat(), rng.nextFloat2());
+		if (ls.pdf <= 0.f) return;
+
+		float3 toLight = ls.position - P;
+		float  dist2   = fmaxf(dot(toLight, toLight), 1e-8f);
+		float  dist    = sqrtf(dist2);
+		float3 wi      = toLight / dist;
+
+		float cosSurf  = fmaxf(dot(wi, normal), 0.f);
+		float cosLight = fmaxf(dot(ls.normal, -wi), 0.f);
+		if (cosSurf <= 0.f || cosLight <= 1e-6f) return;
+
+		float solidPdf = ls.pdf * dist2 / cosLight;
+		if (solidPdf <= 0.f) return;
+
+		if (Vera::Core::TraverseAnyHit(geom, P + normal * 1e-4f, wi, 1e-4f, dist - 2e-3f)) return;
+
+		float4 tr = make_float4(1.f, 1.f, 1.f, 1.f);
+		if (ray.m_MediumIdx != 0)
+			tr = EvalTransmittance(media[ray.m_MediumIdx - 1], P + normal * 1e-4f, wi, dist - 2e-3f, ray.m_Wavelengths, rng);
+
+		float lamI = SampleFluorExcitation(rng.nextFloat(), mat.fluorLamEx, mat.fluorSigma,
+			mat.fluorAbsCdfLo, mat.fluorAbsCdfHi);
+		const Material& lmat = materials[ls.materialId];
+		float LeI = EvalEmission(lmat, lamI); // light emission at the sampled excitation wavelength
+		if (LeI <= 0.f) return;
+
+		float misWeight = PowerHeuristic(solidPdf, MH::lambertianPdf(wi, normal));
+		float commonScale = misWeight * cosSurf / solidPdf * LeI * mat.fluorQY * mat.fluorAbsNorm / PI;
+
+		float4 lo  = ray.m_Wavelengths; // l_o per lane == sensor wavelength at this (pre-shift) vertex
+		float4 nee = ray.m_Throughput;
+		nee.x *= FluorEmissionPdf(lo.x, mat.fluorLamEm, mat.fluorSigma, mat.fluorEmNorm) * commonScale * tr.x;
+		nee.y *= FluorEmissionPdf(lo.y, mat.fluorLamEm, mat.fluorSigma, mat.fluorEmNorm) * commonScale * tr.y;
+		nee.z *= FluorEmissionPdf(lo.z, mat.fluorLamEm, mat.fluorSigma, mat.fluorEmNorm) * commonScale * tr.z;
+		nee.w *= FluorEmissionPdf(lo.w, mat.fluorLamEm, mat.fluorSigma, mat.fluorEmNorm) * commonScale * tr.w;
+
+		AccumulateContribution(fb, ray.pixelId, cieTex, ray.m_SensorWavelengths, nee, ray.m_Pdf,
+			make_float4(1.f, 1.f, 1.f, 1.f));
 	}
 
 	// NEE against LightBVH area lights, GGX surfaces. Mirrors SampleDirectLighting but
@@ -296,7 +355,7 @@ namespace Vera::Spectral::HWSS {
 		nee.z *= Dh * vis * MH::schlickFresnel(f2, cosTheta) * scale * tr.z;
 		nee.w *= Dh * vis * MH::schlickFresnel(f3, cosTheta) * scale * tr.w;
 
-		AccumulateContribution(fb, ray.pixelId, cieTex, ray.m_Wavelengths, nee, ray.m_Pdf, LeVec);
+		AccumulateContribution(fb, ray.pixelId, cieTex, ray.m_SensorWavelengths, nee, ray.m_Pdf, LeVec);
 	}
 
 	// NEE against LightBVH area lights, ROUGH dielectric surfaces only (mat.roughness > 0;
@@ -407,7 +466,7 @@ namespace Vera::Spectral::HWSS {
 		float4 nee = ray.m_Throughput;
 		nee.x *= scale * tr.x; nee.y *= scale * tr.y; nee.z *= scale * tr.z; nee.w *= scale * tr.w;
 
-		AccumulateContribution(fb, ray.pixelId, cieTex, ray.m_Wavelengths, nee, ray.m_Pdf, LeVec);
+		AccumulateContribution(fb, ray.pixelId, cieTex, ray.m_SensorWavelengths, nee, ray.m_Pdf, LeVec);
 	}
 
 	// Bit tags for the material lobe SampleDirectLightingEnv should evaluate.
@@ -534,7 +593,7 @@ namespace Vera::Spectral::HWSS {
 		nee.x *= fVal.x * scale; nee.y *= fVal.y * scale;
 		nee.z *= fVal.z * scale; nee.w *= fVal.w * scale;
 
-		AccumulateContribution(fb, ray.pixelId, cieTex, ray.m_Wavelengths, nee, ray.m_Pdf, LeVec);
+		AccumulateContribution(fb, ray.pixelId, cieTex, ray.m_SensorWavelengths, nee, ray.m_Pdf, LeVec);
 	}
 
 	__global__ void ShadeKernelHWSSWavefront(
@@ -679,15 +738,19 @@ namespace Vera::Spectral::HWSS {
 			// missed to a textured env also had that direction explicitly sampled by
 			// SampleDirectLightingEnv, so down-weight this BSDF-sampled hit. Delta
 			// (camera / mirror) bounces have no competing env-NEE strategy => full weight.
-			float misWeight = 1.f;
+			float misScalar = 1.f;
 			if (envMap.tex != 0 && !(ray.flags & RAY_FLAG_DELTA)) {
 				float envPdf = EnvMapPdf(envMap, missDir);
-				misWeight = PowerHeuristic(ray.m_BsdfPdf, envPdf);
+				misScalar = PowerHeuristic(ray.m_BsdfPdf, envPdf);
 			}
+			// Fluoresced lanes have no env-NEE counterpart yet, so they always get full weight.
+			unsigned char fm = ray.m_LaneFluoresced;
 			float4 wThpt = make_float4(
-				ray.m_Throughput.x * misWeight, ray.m_Throughput.y * misWeight,
-				ray.m_Throughput.z * misWeight, ray.m_Throughput.w * misWeight);
-			AccumulateContribution(fb, ray.pixelId, cieTex, ray.m_Wavelengths, wThpt, ray.m_Pdf, LeVec);
+				ray.m_Throughput.x * ((fm & 1u) ? 1.f : misScalar),
+				ray.m_Throughput.y * ((fm & 2u) ? 1.f : misScalar),
+				ray.m_Throughput.z * ((fm & 4u) ? 1.f : misScalar),
+				ray.m_Throughput.w * ((fm & 8u) ? 1.f : misScalar));
+			AccumulateContribution(fb, ray.pixelId, cieTex, ray.m_SensorWavelengths, wThpt, ray.m_Pdf, LeVec);
 			ray.flags |= RAY_FLAG_DEAD;
 			StoreRay(coreOut, extOut, idx, ray);
 			return;
@@ -732,22 +795,25 @@ namespace Vera::Spectral::HWSS {
 			// NEE — MIS-combine the two strategies via the power heuristic instead
 			// of naively picking one, using EmissiveHitPdf for the light strategy's
 			// pdf of the exact direction the BSDF sample happened to take.
-			float misWeight = 1.f;
+			float misScalar = 1.f;
 			if (!(ray.flags & RAY_FLAG_DELTA)) {
 				float lightPdfArea = EmissiveHitPdf(lightBvh, hit.m_PrimIdx, ray.m_Origin);
 				float cosLight = fabsf(dot(normal, ray.m_Direction));
 				float dist2 = hit.t * hit.t;
 				float lightPdfSolidAngle = (lightPdfArea > 0.f && cosLight > 1e-6f) ? lightPdfArea * dist2 / cosLight : 0.f;
-				misWeight = PowerHeuristic(ray.m_BsdfPdf, lightPdfSolidAngle);
+				misScalar = PowerHeuristic(ray.m_BsdfPdf, lightPdfSolidAngle);
 			}
-			if (misWeight > 0.f) {
+			// A fluoresced lane now has a competing NEE strategy (SampleDirectLightingFluor,
+			// called at the previous vertex against this same light and direction pdf), so
+			// it uses the same scalar MIS weight as every other lane.
+			if (misScalar > 0.f) {
 				float4 LeVec = make_float4(
 					EvalEmission(mat, ray.m_Wavelengths.x), EvalEmission(mat, ray.m_Wavelengths.y),
 					EvalEmission(mat, ray.m_Wavelengths.z), EvalEmission(mat, ray.m_Wavelengths.w));
 				float4 thptWeighted = make_float4(
-					ray.m_Throughput.x * misWeight, ray.m_Throughput.y * misWeight,
-					ray.m_Throughput.z * misWeight, ray.m_Throughput.w * misWeight);
-				AccumulateContribution(fb, ray.pixelId, cieTex, ray.m_Wavelengths, thptWeighted, ray.m_Pdf, LeVec);
+					ray.m_Throughput.x * misScalar, ray.m_Throughput.y * misScalar,
+					ray.m_Throughput.z * misScalar, ray.m_Throughput.w * misScalar);
+				AccumulateContribution(fb, ray.pixelId, cieTex, ray.m_SensorWavelengths, thptWeighted, ray.m_Pdf, LeVec);
 			}
 			ray.flags |= RAY_FLAG_DEAD;
 			StoreRay(coreOut, extOut, idx, ray);
@@ -763,6 +829,9 @@ namespace Vera::Spectral::HWSS {
 			SampleDirectLightingEnv(geom, envMap, P, normal, ENV_BSDF_LAMBERT, lambertianReflectance,
 				make_float3(0.f, 0.f, 0.f), make_float3(0.f, 0.f, 0.f), make_float3(0.f, 0.f, 0.f),
 				0.f, 1.f, 1.f, mat, ray, rng, fb, cieTex);
+			// Fluorescent lobe direct lighting (area lights only — env NEE for it isn't built yet).
+			if (IsFluorescent(mat))
+				SampleDirectLightingFluor(geom, lightBvh, materials, media, P, normal, mat, ray, rng, fb, cieTex);
 		}
 
 		float3 ggxTangent, ggxBitangent, ggxWo_l;
@@ -782,15 +851,55 @@ namespace Vera::Spectral::HWSS {
 		float  bsdfMisPdf     = 0.f; // real solid-angle pdf of the sampled wi, used to MIS a later emissive hit
 		float4 thpt = ray.m_Throughput;
 		bool   valid = true;
+		bool   didFluoresce = false; // set if any lane took the wavelength-shift channel this bounce
 
 		if (mat.type == MaterialType::Lambertian) {
 			MH::sampleLambertian(normal, rng.nextFloat2(), wi, pdfDirectional);
 			if (pdfDirectional <= 0.f) valid = false;
-			else {
+			else if (!IsFluorescent(mat)) {
 				// cosine-weighted sampling cancels cosTheta/pdf, leaving throughput *= albedo
 				thpt.x *= lambertianReflectance.x; thpt.y *= lambertianReflectance.y;
 				thpt.z *= lambertianReflectance.z; thpt.w *= lambertianReflectance.w;
 				bsdfMisPdf = pdfDirectional;
+			} else {
+				// Fluorescent Lambertian: re-emission is diffuse, so the cosine-sampled `wi`
+				// is shared — only each lane's wavelength/throughput branches. Per lane we
+				// route to elastic reflection or a wavelength shift; draws happen
+				// unconditionally so a material-sorted batch stays draw-count-uniform.
+				bsdfMisPdf = pdfDirectional;
+				unsigned char fluorMask = 0;
+				float uRoute   = rng.nextFloat();
+				float lamInU[4] = { rng.nextFloat(), rng.nextFloat(), rng.nextFloat(), rng.nextFloat() };
+				float sWl[4]  = { ray.m_SensorWavelengths.x, ray.m_SensorWavelengths.y,
+				                  ray.m_SensorWavelengths.z, ray.m_SensorWavelengths.w };
+				float tWl[4]  = { ray.m_Wavelengths.x, ray.m_Wavelengths.y,
+				                  ray.m_Wavelengths.z, ray.m_Wavelengths.w };
+				float refl[4] = { lambertianReflectance.x, lambertianReflectance.y,
+				                  lambertianReflectance.z, lambertianReflectance.w };
+				float* thptArr[4] = { &thpt.x, &thpt.y, &thpt.z, &thpt.w };
+				for (int lane = 0; lane < HWSS_LANES; ++lane) {
+					// pFl ~ 0 outside the emission band, so an out-of-band lane (or any
+					// lane on a non-fluorescent scene) always takes `*= refl` below —
+					// bit-identical to the plain elastic path.
+					float pFl = FluorRoutingProb(sWl[lane], mat.fluorLamEm, mat.fluorSigma);
+					if (uRoute < pFl) {
+						didFluoresce = true;
+						fluorMask |= (unsigned char)(1u << lane);
+						// Backward path: the current wavelength is the fluorescent OUTPUT;
+						// sample the INPUT wavelength from a(lamIn)/N_a (see
+						// FluorescenceHWSS.h), which cancels a(lamIn) exactly.
+						float lamInNm = SampleFluorExcitation(lamInU[lane], mat.fluorLamEx, mat.fluorSigma,
+							mat.fluorAbsCdfLo, mat.fluorAbsCdfHi);
+						float phiOverQ = mat.fluorQY * mat.fluorAbsNorm
+							* FluorEmissionPdf(tWl[lane], mat.fluorLamEm, mat.fluorSigma, mat.fluorEmNorm);
+						*thptArr[lane] *= phiOverQ / pFl;
+						tWl[lane] = lamInNm; // the path continues at the input wavelength
+					} else {
+						*thptArr[lane] *= refl[lane] / (1.f - pFl);
+					}
+				}
+				ray.m_Wavelengths = make_float4(tWl[0], tWl[1], tWl[2], tWl[3]);
+				ray.m_LaneFluoresced = fluorMask;
 			}
 		} else if (mat.type == MaterialType::GGX) {
 			float3 h_l  = MH::sampleGGXVNDF(ggxWo_l, ggxAlpha, rng.nextFloat2());
@@ -949,6 +1058,9 @@ namespace Vera::Spectral::HWSS {
 		ray.flags &= ~RAY_FLAG_DELTA;
 		if (mat.type == MaterialType::Dielectric && mat.roughness <= 0.f)
 			ray.flags |= RAY_FLAG_DELTA; // perfectly smooth — still a true delta BSDF, no NEE for it
+		// The per-lane fluoresced mask is set in the Lambertian branch; any other
+		// (elastic) bounce clears it so a following light hit resumes normal MIS.
+		if (!didFluoresce) ray.m_LaneFluoresced = 0;
 		ray.m_RngState = rng.pcg.m_State;
 
 		if (ray.m_BounceCount >= maxBounces) ray.flags |= RAY_FLAG_DEAD;

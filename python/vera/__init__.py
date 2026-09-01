@@ -40,14 +40,17 @@ ggx = _vera.ggx
 dielectric = _vera.dielectric
 dispersive_dielectric = _vera.dispersive_dielectric
 emissive = _vera.emissive
+fluorescent_lambertian = _vera.fluorescent_lambertian
 medium = _vera.medium
 camera_look_at = _vera.camera_look_at
 _render = _vera.render
+_render_xyz = _vera.render_xyz
 
 __all__ = [
     "Material", "Medium", "Camera", "Scene",
-    "lambertian", "ggx", "dielectric", "dispersive_dielectric", "emissive", "medium",
-    "camera_look_at", "render", "render_hdr", "save_png", "shapes",
+    "lambertian", "ggx", "dielectric", "dispersive_dielectric", "emissive",
+    "fluorescent_lambertian", "medium",
+    "camera_look_at", "render", "render_hdr", "render_xyz", "save_png", "shapes",
 ]
 
 
@@ -106,6 +109,15 @@ def render(scene, camera, *, spp=256, max_bounces=32, tonemap="aces",
 def render_hdr(scene, camera, *, spp=256, max_bounces=32, exposure=1.0, use_optix=False):
     """Render with no tonemap/clamp — (H, W, 3) float32 of raw linear radiance."""
     return _render(_unwrap(scene), camera, spp, max_bounces, "raw", exposure, use_optix)
+
+
+def render_xyz(scene, camera, *, spp=256, max_bounces=32, use_optix=False):
+    """Raw per-pixel CIE XYZ radiance — (H, W, 3) float32, no tonemap/exposure/sRGB.
+
+    This is the space the renderer accumulates in; use it for spectral-oracle
+    cross-checks (project a reference L(lambda) through the analytic CIE fit in
+    src/HWSS/Public/CIE.h and compare directly)."""
+    return _render_xyz(_unwrap(scene), camera, spp, max_bounces, use_optix)
 
 
 def save_png(path, img, gamma=False):

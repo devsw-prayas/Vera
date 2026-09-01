@@ -67,6 +67,10 @@ namespace Vera::Spectral::HWSS {
 		ray.m_Origin       = origin;
 		ray.m_Direction    = dir;
 		ray.m_Wavelengths  = wavelengths;
+		// Sensor wavelengths start equal to the trace wavelengths; they only diverge
+		// if a fluorescent event later shifts a trace wavelength (Mojzik et al. 2018).
+		ray.m_SensorWavelengths = wavelengths;
+		ray.m_LaneFluoresced = 0;
 		ray.m_Throughput   = make_float4(1.f, 1.f, 1.f, 1.f);
 		ray.m_Pdf          = make_float4(lanePdf, lanePdf, lanePdf, lanePdf);
 		ray.m_RngState     = rng.pcg.m_State;

@@ -4,6 +4,7 @@
 #include <vector_types.h>
 
 #include "RGB2Spec.h"
+#include "FluorescenceHWSS.h"
 
 namespace Vera::Spectral::HWSS {
 	enum class MaterialType : uint8_t {
@@ -39,6 +40,16 @@ namespace Vera::Spectral::HWSS {
 		float                sellC1        = 0.f;  // Sellmeier term 1 resonance (um^2)
 		float                sellB2        = 0.f;  // Sellmeier term 2 coefficient
 		float                sellC2        = 0.f;  // Sellmeier term 2 resonance (um^2)
+		// ── Rank-1 fluorophore (see FluorescenceHWSS.h), optional. fluorQY == 0 means
+		// inert: a pure elastic Lambertian. Stokes: fluorLamEm > fluorLamEx.
+		float                fluorLamEx    = 0.f;  // absorption Gaussian centre [nm]
+		float                fluorLamEm    = 0.f;  // emission Gaussian centre [nm]
+		float                fluorSigma    = 0.f;  // shared linewidth [nm]
+		float                fluorQY       = 0.f;  // quantum yield [0,1]; 0 disables fluorescence
+		float                fluorEmNorm   = 1.f;  // host-precomputed emission normalisation
+		float                fluorAbsCdfLo = 0.f;  // host-precomputed excitation sampling constants
+		float                fluorAbsCdfHi = 1.f;
+		float                fluorAbsNorm  = 1.f;
 		MaterialType         type          = MaterialType::Lambertian;
 		uint8_t              mediumIdx     = 0;    // Dielectric interior medium (1-indexed, 0 = vacuum)
 		uint8_t              pad[2]        = {};
@@ -54,6 +65,10 @@ namespace Vera::Spectral::HWSS {
 
 	__host__ __device__ inline bool IsDispersive(const Material& mat) {
 		return mat.sellB1 != 0.f || mat.sellB2 != 0.f;
+	}
+
+	__host__ __device__ inline bool IsFluorescent(const Material& mat) {
+		return mat.fluorQY > 0.f;
 	}
 
 	// 2-term Sellmeier equation: n^2(lambda) = 1 + B1*l^2/(l^2-C1) + B2*l^2/(l^2-C2),
@@ -103,6 +118,27 @@ namespace Vera::Spectral::HWSS {
 		m.sellB2 = sellB2; m.sellC2 = sellC2;
 		m.roughness = roughness;
 		m.mediumIdx = mediumIdx;
+		return m;
+	}
+
+	// Diffuse Lambertian surface that is also a rank-1 fluorophore: reflects
+	// elastically with `albedoRGB` and, in parallel, absorbs around lamEx and
+	// re-emits diffusely around lamEm with the given quantum yield (real
+	// fluorescent paint is both at once). Caller should keep peak reflectance +
+	// quantumYield below 1 for energy conservation.
+	inline Material MakeFluorescentLambertian(
+		const RGB2SpecTable& table, float3 albedoRGB,
+		float lamEx, float lamEm, float sigma, float quantumYield)
+	{
+		Material m = MakeLambertian(table, albedoRGB);
+		m.fluorLamEx  = lamEx;
+		m.fluorLamEm  = lamEm;
+		m.fluorSigma  = sigma;
+		m.fluorQY     = quantumYield;
+		m.fluorEmNorm = FluorEmissionNorm(lamEm, sigma);
+		m.fluorAbsCdfLo = FluorAbsCdfLo(lamEx, sigma);
+		m.fluorAbsCdfHi = FluorAbsCdfHi(lamEx, sigma);
+		m.fluorAbsNorm  = FluorAbsNorm(lamEx, sigma);
 		return m;
 	}
 

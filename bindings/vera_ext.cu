@@ -237,6 +237,55 @@ render(Scene& scene, const Camera& camera,
     return { out, { H, W, 3 }, owner };
 }
 
+// ── render_xyz ─────────────────────────────────────────────────────────
+// Raw per-pixel CIE XYZ radiance: the accumulated framebuffer divided by
+// (spp * CIE_Y_Integral), before any tonemap/exposure/sRGB. This is the space
+// the renderer actually integrates in, so it's the target for the fluorescence
+// tests' cross-checks against the DBR oracle's spectral radiance.
+nb::ndarray<nb::numpy, float, nb::shape<-1, -1, 3>>
+render_xyz(Scene& scene, const Camera& camera,
+           uint32_t spp, uint32_t max_bounces, bool use_optix) {
+
+    scene.build();
+
+    const uint32_t W = camera.m_Width, H = camera.m_Height;
+    if (W == 0 || H == 0)
+        throw std::runtime_error("camera width/height not set");
+
+    FrameBufferHWSS fb = AllocFrameBuffer(W, H);
+    float4* d_outRGB = nullptr;
+    cudaMalloc(&d_outRGB, size_t(W) * H * sizeof(float4));
+    cuda_check("render_xyz: alloc");
+
+    Material* d_materials = (Material*)scene.gpu.d_mats;
+    {
+        nb::gil_scoped_release nogil;
+        RenderHWSS(scene.gpu.geom, d_materials, scene.lighting.d_media, scene.lighting.lightBvh,
+                   scene.envMap, camera, fb, d_outRGB, spp, max_bounces,
+                   /*defaultMediumIdx*/ 0, ToneMapper::Raw, 1.f, use_optix);
+        cudaDeviceSynchronize();
+    }
+    cuda_check("render_xyz: RenderHWSS");
+
+    // fb.d_accumXYZ survives RenderHWSS (only the CIE texture is freed there); it
+    // holds the running sum over `spp` samples of per-lane XYZ contributions.
+    std::vector<float3> host(size_t(W) * H);
+    cudaMemcpy(host.data(), fb.d_accumXYZ, host.size() * sizeof(float3), cudaMemcpyDeviceToHost);
+    cudaFree(d_outRGB);
+    FreeFrameBuffer(fb);
+    cuda_check("render_xyz: copyback");
+
+    const float norm = 1.f / (float(spp) * CIE_Y_Integral(LAMBDA_MIN, LAMBDA_MAX));
+    float* out = new float[size_t(W) * H * 3];
+    for (size_t i = 0; i < size_t(W) * H; ++i) {
+        out[i * 3 + 0] = host[i].x * norm;
+        out[i * 3 + 1] = host[i].y * norm;
+        out[i * 3 + 2] = host[i].z * norm;
+    }
+    nb::capsule owner(out, [](void* p) noexcept { delete[] static_cast<float*>(p); });
+    return { out, { H, W, 3 }, owner };
+}
+
 // ── Camera convenience constructor ─────────────────────────────────────
 Camera camera_look_at(const Vec3& eye, const Vec3& target, const Vec3& up,
                       float fov_y_deg, uint32_t width, uint32_t height) {
@@ -278,6 +327,11 @@ NB_MODULE(_vera, m) {
           nb::arg("roughness") = 0.f, nb::arg("medium") = 0);
     m.def("emissive", [](Vec3 color, float intensity) { return MakeEmissive(spec_table(), f3(color), intensity); },
           nb::arg("color"), nb::arg("intensity"));
+    m.def("fluorescent_lambertian",
+          [](Vec3 albedo, float lam_ex, float lam_em, float sigma, float quantum_yield) {
+              return MakeFluorescentLambertian(spec_table(), f3(albedo), lam_ex, lam_em, sigma, quantum_yield); },
+          nb::arg("albedo"), nb::arg("lam_ex"), nb::arg("lam_em"),
+          nb::arg("sigma") = 15.f, nb::arg("quantum_yield") = 1.f);
     m.def("medium", [](Vec3 absorb, float absorb_scale, Vec3 scatter, float scatter_scale, float g) {
               return MakeMedium(spec_table(), f3(absorb), absorb_scale, f3(scatter), scatter_scale, g); },
           nb::arg("absorb"), nb::arg("absorb_scale"), nb::arg("scatter"), nb::arg("scatter_scale"),
@@ -330,4 +384,9 @@ NB_MODULE(_vera, m) {
           nb::arg("spp") = 256, nb::arg("max_bounces") = 32,
           nb::arg("tonemap") = "aces", nb::arg("exposure") = 1.f, nb::arg("use_optix") = false,
           "Render `scene` from `camera`; returns tonemapped (H, W, 3) float32 in [0, 1].");
+    m.def("render_xyz", &render_xyz,
+          nb::arg("scene"), nb::arg("camera"),
+          nb::arg("spp") = 256, nb::arg("max_bounces") = 32, nb::arg("use_optix") = false,
+          "Raw per-pixel CIE XYZ radiance (no tonemap / exposure / sRGB); the space "
+          "the renderer integrates in. Target for spectral-oracle cross-checks.");
 }
