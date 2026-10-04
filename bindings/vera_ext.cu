@@ -30,6 +30,7 @@
 #include "SceneHWSS.h"
 #include "FrameBufferHWSS.cuh"
 #include "RendererHWSS.cuh"
+#include "RendererSHW.cuh"
 #include "CIE.h"
 #include "SpectralConstants.h"
 
@@ -267,12 +268,57 @@ namespace {
 		FreeFrameBuffer(fb);
 		cuda_check("render_xyz: copyback");
 
-		const float norm = 1.f / (float(spp) * CIE_Y_Integral(LAMBDA_MIN, LAMBDA_MAX));
+		const float norm = 1.f / (float(spp) * CIE_Y_Integral(Vera::Spectral::HWSS::LAMBDA_MIN, Vera::Spectral::HWSS::LAMBDA_MAX));
 		float* out = new float[size_t(W) * H * 3];
 		for (size_t i = 0; i < size_t(W) * H; ++i) {
 			out[i * 3 + 0] = host[i].x * norm;
 			out[i * 3 + 1] = host[i].y * norm;
 			out[i * 3 + 2] = host[i].z * norm;
+		}
+		nb::capsule owner(out, [](void* p) noexcept { delete[] static_cast<float*>(p); });
+		return { out, { H, W, 3 }, owner };
+	}
+
+	// -- render_shw (mono-wavelength SHW pipeline) -------------------------
+	nb::ndarray<nb::numpy, float, nb::shape<-1, -1, 3>>
+		render_shw(Scene& scene, const Camera& camera,
+				   uint32_t spp, uint32_t max_bounces,
+				   const std::string& tonemap, float exposure, bool use_optix,
+				   uint32_t default_medium) {
+		scene.build();
+
+		const uint32_t W = camera.m_Width, H = camera.m_Height;
+		if (W == 0 || H == 0)
+			throw std::runtime_error("camera width/height not set");
+
+		FrameBufferHWSS fb = AllocFrameBuffer(W, H);
+		float4* d_outRGB = nullptr;
+		cudaMalloc(&d_outRGB, size_t(W) * H * sizeof(float4));
+		cuda_check("render_shw: alloc");
+
+		Material* d_materials = (Material*)scene.gpu.d_mats;
+		ToneMapper tm = parse_tonemap(tonemap);
+
+		{
+			nb::gil_scoped_release nogil;
+			Vera::SHW::RenderSHW(scene.gpu.geom, d_materials, scene.lighting.d_media,
+								 scene.lighting.lightBvh, scene.envMap, camera, fb, d_outRGB,
+								 spp, max_bounces, default_medium, tm, exposure, use_optix);
+			cudaDeviceSynchronize();
+		}
+		cuda_check("render_shw: RenderSHW");
+
+		std::vector<float4> host(size_t(W) * H);
+		cudaMemcpy(host.data(), d_outRGB, host.size() * sizeof(float4), cudaMemcpyDeviceToHost);
+		cudaFree(d_outRGB);
+		FreeFrameBuffer(fb);
+		cuda_check("render_shw: copyback");
+
+		float* out = new float[size_t(W) * H * 3];
+		for (size_t i = 0; i < size_t(W) * H; ++i) {
+			out[i * 3 + 0] = host[i].x;
+			out[i * 3 + 1] = host[i].y;
+			out[i * 3 + 2] = host[i].z;
 		}
 		nb::capsule owner(out, [](void* p) noexcept { delete[] static_cast<float*>(p); });
 		return { out, { H, W, 3 }, owner };
@@ -403,6 +449,13 @@ NB_MODULE(_vera, m) {
 		  nb::arg("default_medium") = 0,
 		  "Render `scene` from `camera`; returns tonemapped (H, W, 3) float32 in [0, 1]. "
 		  "default_medium is the 1-indexed medium the camera starts inside (0 = vacuum).");
+	m.def("render_shw", &render_shw,
+		  nb::arg("scene"), nb::arg("camera"),
+		  nb::arg("spp") = 256, nb::arg("max_bounces") = 32,
+		  nb::arg("tonemap") = "aces", nb::arg("exposure") = 1.f, nb::arg("use_optix") = false,
+		  nb::arg("default_medium") = 0,
+		  "Render with the SHW (scalar hero wavelength) pipeline - one wavelength per path, "
+		  "no 4-lane stratification. Same scene/camera as render().");
 	m.def("render_xyz", &render_xyz,
 		  nb::arg("scene"), nb::arg("camera"),
 		  nb::arg("spp") = 256, nb::arg("max_bounces") = 32, nb::arg("use_optix") = false,
