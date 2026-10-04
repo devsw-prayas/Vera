@@ -6,7 +6,6 @@
 #include <cstdint>
 
 #include "CoreUtils.h"
-#include "RayHWSS.h"
 
 namespace Vera::Core {
 	// Shared host/device launch params - must stay layout-identical on both sides. Fields
@@ -52,7 +51,7 @@ namespace Vera::Core {
 	// Traversal.cuh's TraversalKernelWavefront, so downstream is backend-agnostic.
 	void LaunchOptixTraversal(
 		OptixTraversalContext& ctx,
-		Spectral::HWSS::RayCoreSoA rayCore,
+		float3* origins, float3* directions, unsigned char* flags,
 		WavefrontHitRecord* hits,
 		uint32_t rayCount,
 		cudaStream_t stream);

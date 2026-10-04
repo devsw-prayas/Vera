@@ -36,4 +36,10 @@ namespace Vera::Core {
 		float m_V = 0.f;
 		uint32_t m_InstIdx = 0;
 	};
+
+	static constexpr float LAMBDA_MIN   = 360.f;
+	static constexpr float LAMBDA_MAX   = 700.f;
+	static constexpr float LAMBDA_RANGE = LAMBDA_MAX - LAMBDA_MIN;
+
+	static constexpr unsigned char RAY_FLAG_DEAD = 0x01;
 }

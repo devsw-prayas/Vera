@@ -1,10 +1,10 @@
 #include "MaterialSortHWSS.cuh"
 #include <cub/device/device_radix_sort.cuh>
 
-namespace Vera::Spectral::HWSS {
+namespace Vera::Core {
 	__global__ void ExtractMaterialKeysKernel(
-		Core::GeometryBuffers geom,
-		Core::WavefrontHitRecord* hits,
+		GeometryBuffers geom,
+		WavefrontHitRecord* hits,
 		uint32_t* keysOut,
 		uint32_t* indicesOut,
 		uint32_t count) {

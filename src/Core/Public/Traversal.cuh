@@ -4,7 +4,6 @@
 #include <Triangle.h>
 
 #include "CoreUtils.h"
-#include "RayHWSS.h"
 
 namespace Vera::Core {
 	// Shared BVH-walk primitives: decoupled from any ray representation.
@@ -25,10 +24,12 @@ namespace Vera::Core {
 		float tmin, float tmax);
 
 	// Wavefront kernel: thin wrapper - checks RAY_FLAG_DEAD, then delegates
-	// to TraverseClosestHit.  HWSS-specific because it knows about RayHWSS.
+	// to TraverseClosestHit. Takes raw SoA pointers so any ray representation can use it.
 	__global__ void TraversalKernelWavefront(
 		GeometryBuffers geom,
-		Spectral::HWSS::RayCoreSoA rayCore,
+		float3* __restrict__ origins,
+		float3* __restrict__ directions,
+		unsigned char* __restrict__ flags,
 		WavefrontHitRecord* __restrict__ hits,
 		uint32_t rayCount);
 }

@@ -2,8 +2,10 @@
 #include <vector_types.h>
 #include <cstdint>
 
+#include <CoreUtils.h>
+
 namespace Vera::Spectral::HWSS {
-	static constexpr unsigned char RAY_FLAG_DEAD = 0x01;
+	static constexpr unsigned char RAY_FLAG_DEAD = Core::RAY_FLAG_DEAD;
 	static constexpr unsigned char RAY_FLAG_DELTA = 0x02;
 	// Set on a dispersive event: the offset lanes stop being valid samples of the same
 	// path and are zeroed, leaving only the hero lane (Wilkie et al.).

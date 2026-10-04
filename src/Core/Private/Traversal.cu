@@ -128,24 +128,24 @@ namespace Vera::Core {
 		return TraverseBVH<true>(geom, origin, direction, tmin, tmax).m_Hit;
 	}
 
-	// -- Wavefront kernel: thin HWSS wrapper ------------------------------------
+	// -- Wavefront kernel: thin wrapper ------------------------------------
 
 	__global__ void TraversalKernelWavefront(
 		GeometryBuffers geom,
-		Spectral::HWSS::RayCoreSoA rayCore,
+		float3* __restrict__ origins,
+		float3* __restrict__ directions,
+		unsigned char* __restrict__ flags,
 		WavefrontHitRecord* __restrict__ hits,
 		uint32_t rayCount) {
 		unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
 		if (idx >= rayCount) return;
 
-		unsigned char flags = rayCore.flags[idx];
-
 		WavefrontHitRecord h{};
 		h.m_Hit = false;
 		h.t = FLT_MAX;
 
-		if (flags & Spectral::HWSS::RAY_FLAG_DEAD) { hits[idx] = h; return; }
+		if (flags[idx] & RAY_FLAG_DEAD) { hits[idx] = h; return; }
 
-		hits[idx] = TraverseClosestHit(geom, rayCore.origin[idx], rayCore.direction[idx], 1e-4f, FLT_MAX);
+		hits[idx] = TraverseClosestHit(geom, origins[idx], directions[idx], 1e-4f, FLT_MAX);
 	}
 } // namespace Vera::Core

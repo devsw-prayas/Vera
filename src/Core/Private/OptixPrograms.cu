@@ -17,7 +17,7 @@ extern "C" __global__ void __raygen__vera()
 
 	// Parity with the software path's dead-ray check; always false in the current pipeline
 	// (RayCompactor removes dead rays between bounces).
-	if (params.rayFlags[idx] & Vera::Spectral::HWSS::RAY_FLAG_DEAD) {
+	if (params.rayFlags[idx] & Vera::Core::RAY_FLAG_DEAD) {
 		params.hits[idx].m_Hit = false;
 		params.hits[idx].t     = FLT_MAX;
 		return;

@@ -252,16 +252,16 @@ namespace Vera::Core {
 
 	void LaunchOptixTraversal(
 		OptixTraversalContext& ctx,
-		Spectral::HWSS::RayCoreSoA rayCore,
+		float3* origins, float3* directions, unsigned char* flags,
 		WavefrontHitRecord* hits,
 		uint32_t rayCount,
 		cudaStream_t stream) {
 		if (rayCount == 0) return;
 
 		OptixTraversalParams params{};
-		params.rayOrigin = rayCore.origin;
-		params.rayDirection = rayCore.direction;
-		params.rayFlags = rayCore.flags;
+		params.rayOrigin = origins;
+		params.rayDirection = directions;
+		params.rayFlags = flags;
 		params.hits = hits;
 		params.handle = ctx.traversableHandle;
 

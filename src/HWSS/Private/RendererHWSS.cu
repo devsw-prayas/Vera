@@ -89,10 +89,10 @@ namespace Vera::Spectral::HWSS {
 				dim3 grid1D((activeCount + block1D.x - 1) / block1D.x);
 #ifdef VERA_ENABLE_OPTIX
 				if (useOptix)
-					Core::LaunchOptixTraversal(optixCtx, coreA, d_hits, activeCount, /*stream*/0);
+					Core::LaunchOptixTraversal(optixCtx, coreA.origin, coreA.direction, coreA.flags, d_hits, activeCount, /*stream*/0);
 				else
 #endif
-					Core::TraversalKernelWavefront << <grid1D, block1D >> > (geom, coreA, d_hits, activeCount);
+					Core::TraversalKernelWavefront << <grid1D, block1D >> > (geom, coreA.origin, coreA.direction, coreA.flags, d_hits, activeCount);
 				uint32_t* order = sorter.Sort(geom, d_hits, activeCount, /*stream*/0);
 				ShadeKernelHWSSWavefront << <grid1D, block1D >> > (
 					geom, coreA, extA, d_hits, order, d_materials, d_media, lightBvh,

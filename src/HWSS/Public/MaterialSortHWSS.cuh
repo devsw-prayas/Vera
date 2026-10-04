@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <CoreUtils.h>
 
-namespace Vera::Spectral::HWSS {
+namespace Vera::Core {
 	struct MaterialSorter {
 		void* d_tempStorage = nullptr;
 		size_t    tempStorageBytes = 0;
@@ -20,6 +20,10 @@ namespace Vera::Spectral::HWSS {
 		// Returns a device permutation `order` of length `count` such that hits[order[i]]
 		// visits rays grouped by material id (0xFFFFu for misses). Radix-sorts (key, index)
 		// pairs only - does not move any ray/hit data.
-		uint32_t* Sort(Core::GeometryBuffers geom, Core::WavefrontHitRecord* hits, uint32_t count, cudaStream_t stream = 0);
+		uint32_t* Sort(GeometryBuffers geom, WavefrontHitRecord* hits, uint32_t count, cudaStream_t stream = 0);
 	};
+}
+
+namespace Vera::Spectral::HWSS {
+	using MaterialSorter = Core::MaterialSorter;
 }
