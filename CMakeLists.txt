@@ -75,6 +75,7 @@ add_library(vera_core STATIC
 target_include_directories(vera_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src/Core/Public
     ${CMAKE_CURRENT_SOURCE_DIR}/src/HWSS/Public
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/SHW/Public
 )
 
 target_precompile_headers(vera_core PRIVATE
